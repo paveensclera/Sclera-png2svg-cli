@@ -59,6 +59,76 @@ def analyze_image_for_conversion(png_path: Path) -> dict:
         logger.warning(f"Image analysis failed: {str(e)}")
         return {}
 
+def standardize_svg_for_frontend(svg_path: Path, output_filename: str) -> Path:
+    """
+    Standardize SVG dimensions and add white background for frontend compatibility
+    
+    NOTE: This function modifies the SVG to match frontend expectations:
+    - Sets consistent dimensions (width='500', height='100%') 
+    - Adds overflow='visible' for proper rendering
+    - Inserts white background rectangle for consistent appearance
+    """
+    try:
+        standardized_svg_path = TEMP_DIR / f"{output_filename}_standardized.svg"
+        
+        logger.info(f"     🎨 Standardizing SVG for frontend compatibility...")
+        
+        # Read the original SVG content
+        with open(svg_path, 'r', encoding='utf-8') as f:
+            svg_content = f.read()
+        
+        try:
+            # NOTE: Parse SVG using xml.dom.minidom for manipulation
+            from xml.dom import minidom
+            dom = minidom.parseString(svg_content)
+            svg_element = dom.getElementsByTagName('svg')[0]
+            
+            # NOTE: Set the same dimensions as the frontend code expects
+            svg_element.setAttribute('overflow', 'visible')
+            svg_element.setAttribute('width', '500')
+            svg_element.setAttribute('height', '100%')
+            
+            # NOTE: Add white background rectangle to ensure consistent background
+            # This ensures the SVG has an explicit white background regardless of viewer
+            rect_element = dom.createElement('rect')
+            rect_element.setAttribute('x', '0')
+            rect_element.setAttribute('y', '0')
+            rect_element.setAttribute('width', '100%')
+            rect_element.setAttribute('height', '100%')
+            rect_element.setAttribute('fill', 'white')
+            
+            # NOTE: Insert the background rectangle as the first child of SVG
+            if svg_element.firstChild:
+                svg_element.insertBefore(rect_element, svg_element.firstChild)
+            else:
+                svg_element.appendChild(rect_element)
+            
+            # Serialize back to string
+            modified_svg_content = dom.toxml()
+            
+        except Exception as e:
+            # FIXME: Better error handling for XML parsing failures
+            logger.warning(f"     ⚠️  Failed to modify SVG dimensions, using original: {str(e)}")
+            modified_svg_content = svg_content
+        
+        # Write the standardized SVG content
+        with open(standardized_svg_path, 'w', encoding='utf-8') as f:
+            f.write(modified_svg_content)
+        
+        if standardized_svg_path.exists():
+            standardized_size = standardized_svg_path.stat().st_size
+            logger.info(f"     ✅ SVG standardization completed ({standardized_size} bytes)")
+            return standardized_svg_path
+        else:
+            # HACK: Return original path if standardization fails
+            logger.warning(f"     ⚠️  Standardization failed, using original SVG")
+            return svg_path
+            
+    except Exception as e:
+        logger.error(f"     ❌ SVG standardization failed: {str(e)}")
+        # HACK: Return original path if standardization fails completely
+        return svg_path
+
 def optimize_svg(svg_path: Path, output_filename: str) -> Path:
     """
     Optimize SVG file using both svgcleaner and svgo for maximum compression and quality
@@ -202,12 +272,12 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
         temp_svg_path = TEMP_DIR / f"{temp_filename}.svg"
 
         # NOTE: Enhanced logging for clear progress tracking
-        logger.info(f"🔄 CONVERTING: {png_path.name} -> {output_svg_path.name}")
+        logger.info(f"📄 CONVERTING: {png_path.name} -> {output_svg_path.name}")
         logger.info(f"   📂 Input:  {png_path}")
         logger.info(f"   📂 Output: {output_svg_path}")
 
         # Step 1: Convert PNG to PBM using ImageMagick
-        logger.info(f"   🖼️  Step 1/3: Converting PNG to PBM using ImageMagick...")
+        logger.info(f"   🖼️  Step 1/4: Converting PNG to PBM using ImageMagick...")
         imagemagick_cmd = [
             "convert", str(png_path),
             "-threshold", "99%",
@@ -217,10 +287,10 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
         if result.returncode != 0:
             logger.error(f"   ❌ ImageMagick conversion failed for {png_path}: {result.stderr}")
             return None
-        logger.info(f"   ✅ Step 1/3 completed: PBM file created ({pbm_path.stat().st_size} bytes)")
+        logger.info(f"   ✅ Step 1/4 completed: PBM file created ({pbm_path.stat().st_size} bytes)")
 
         # Step 2: Convert PBM to SVG using Potrace
-        logger.info(f"   🖊️  Step 2/3: Converting PBM to SVG using Potrace...")
+        logger.info(f"   🖊️  Step 2/4: Converting PBM to SVG using Potrace...")
         potrace_cmd = [
             "potrace", str(pbm_path),
             "-s",
@@ -235,11 +305,17 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
         if not temp_svg_path.exists() or temp_svg_path.stat().st_size < 100:
             logger.error(f"   ❌ Generated SVG file is invalid or too small for {png_path}")
             return None
-        logger.info(f"   ✅ Step 2/3 completed: SVG file created ({temp_svg_path.stat().st_size} bytes)")
+        logger.info(f"   ✅ Step 2/4 completed: SVG file created ({temp_svg_path.stat().st_size} bytes)")
 
-        # Step 3: Optimize the SVG using svgcleaner and svgo
-        logger.info(f"   ⚡ Step 3/3: Optimizing SVG file...")
-        optimized_svg_path = optimize_svg(temp_svg_path, temp_filename)
+        # Step 3: Standardize SVG for frontend compatibility
+        # NOTE: This step adds consistent dimensions and white background for smooth frontend integration
+        logger.info(f"   🎨 Step 3/4: Standardizing SVG for frontend compatibility...")
+        standardized_svg_path = standardize_svg_for_frontend(temp_svg_path, temp_filename)
+        logger.info(f"   ✅ Step 3/4 completed: SVG standardized for frontend")
+
+        # Step 4: Optimize the SVG using svgcleaner and svgo
+        logger.info(f"   ⚡ Step 4/4: Optimizing SVG file...")
+        optimized_svg_path = optimize_svg(standardized_svg_path, temp_filename)
         
         # NOTE: Move optimized SVG to final output location
         if optimized_svg_path.exists():
@@ -247,7 +323,7 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
             import shutil
             shutil.move(str(optimized_svg_path), str(output_svg_path))
             final_size = output_svg_path.stat().st_size
-            logger.info(f"   ✅ Step 3/3 completed: SVG optimized and saved ({final_size} bytes)")
+            logger.info(f"   ✅ Step 4/4 completed: SVG optimized and saved ({final_size} bytes)")
             logger.info(f"🎉 SUCCESS: {png_path.name} -> {output_svg_path.name} (Final size: {final_size} bytes)")
         
         # Clean up intermediate files
@@ -259,6 +335,9 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
             if temp_svg_path.exists() and temp_svg_path != optimized_svg_path:
                 temp_svg_path.unlink()
                 logger.info(f"   🗑️  Removed: {temp_svg_path.name}")
+            if standardized_svg_path.exists() and standardized_svg_path != optimized_svg_path and standardized_svg_path != temp_svg_path:
+                standardized_svg_path.unlink()
+                logger.info(f"   🗑️  Removed: {standardized_svg_path.name}")
         except Exception as e:
             logger.warning(f"   ⚠️  Failed to clean up intermediate files: {str(e)}")
 
@@ -353,7 +432,7 @@ def process_local_files():
             # NOTE: Skip if SVG already exists unless we want to overwrite
             if output_svg_path.exists():
                 skipped_count += 1
-                logger.info(f"   ⏭️  SKIPPED: SVG already exists ({svg_filename})")
+                logger.info(f"   ⭐️  SKIPPED: SVG already exists ({svg_filename})")
                 logger.info(f"   📊 Progress: {index}/{total_files} files checked")
                 continue
             
@@ -382,7 +461,7 @@ def process_local_files():
     logger.info(f"🏁 LOCAL FILE PROCESSING COMPLETED!")
     logger.info(f"📊 FINAL RESULTS:")
     logger.info(f"   ✅ Processed successfully: {processed_count} files")
-    logger.info(f"   ⏭️  Skipped (already exist): {skipped_count} files") 
+    logger.info(f"   ⭐️  Skipped (already exist): {skipped_count} files") 
     logger.info(f"   ❌ Failed: {failed_count} files")
     logger.info(f"   📁 Total files found: {total_files}")
     
@@ -394,7 +473,7 @@ def process_local_files():
 
 if __name__ == "__main__":
     print("\n" + "="*80)
-    print("🏗️  FLOOR MAP PROCESSING SERVICE - LOCAL FILE CONVERTER")
+    print("🗂️  FLOOR MAP PROCESSING SERVICE - LOCAL FILE CONVERTER")
     print("="*80)
     logger.info("🚀 Starting local PNG to SVG conversion...")
     logger.info(f"🐍 Python script: {__file__}")
