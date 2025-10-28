@@ -283,7 +283,7 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
             "-threshold", "99%",
             str(pbm_path)
         ]
-        result = subprocess.run(imagemagick_cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(imagemagick_cmd, capture_output=True, text=True, timeout=300) # 120 seconds is too short for large PNG files
         if result.returncode != 0:
             logger.error(f"   ❌ ImageMagick conversion failed for {png_path}: {result.stderr}")
             return None

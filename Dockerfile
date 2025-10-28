@@ -15,14 +15,14 @@ WORKDIR /app
 # NOTE: Only installing what we need for image processing
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        imagemagick \
-        potrace \
-        curl \
-        wget \
-        nodejs \
-        npm \
-        && apt-get clean \
-        && rm -rf /var/lib/apt/lists/*
+    imagemagick \
+    potrace \
+    curl \
+    wget \
+    nodejs \
+    npm \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # NOTE: Install SVG optimization tools
 RUN npm install -g svgo@3.0.2
@@ -34,20 +34,28 @@ RUN wget -q https://github.com/RazrFalcon/svgcleaner/releases/download/v0.9.5/sv
     && chmod +x /usr/local/bin/svgcleaner \
     && rm svgcleaner_linux_x86_64_0.9.5.tar.gz
 
+# NOTE: Copy custom ImageMagick policy for large PNG processing
+COPY policy.xml /tmp/policy.xml
+
 # NOTE: Configure ImageMagick security policies for image processing
+# Replace the default policy with our custom one that handles large PNG files
 RUN POLICY_FILE="" && \
-    for path in /etc/ImageMagick-6/policy.xml /etc/ImageMagick/policy.xml /usr/local/etc/ImageMagick-6/policy.xml; do \
-        if [ -f "$path" ]; then \
-            POLICY_FILE="$path"; \
-            break; \
-        fi; \
+    for path in /etc/ImageMagick-6/policy.xml /etc/ImageMagick/policy.xml /usr/local/etc/ImageMagick-7/policy.xml; do \
+    if [ -f "$path" ]; then \
+    POLICY_FILE="$path"; \
+    break; \
+    fi; \
     done && \
     if [ -n "$POLICY_FILE" ]; then \
-        sed -i 's/<policy domain="resource" name="memory" value="[^"]*"/<policy domain="resource" name="memory" value="2GiB"/g' "$POLICY_FILE" && \
-        sed -i 's/<policy domain="resource" name="map" value="[^"]*"/<policy domain="resource" name="map" value="2GiB"/g' "$POLICY_FILE" && \
-        sed -i 's/<policy domain="resource" name="area" value="[^"]*"/<policy domain="resource" name="area" value="64MP"/g' "$POLICY_FILE" && \
-        sed -i 's/<policy domain="resource" name="disk" value="[^"]*"/<policy domain="resource" name="disk" value="2GiB"/g' "$POLICY_FILE"; \
-    fi
+    echo "Found ImageMagick policy at: $POLICY_FILE" && \
+    cp /tmp/policy.xml "$POLICY_FILE" && \
+    echo "Updated ImageMagick policy for large PNG processing"; \
+    else \
+    echo "ImageMagick policy file not found, creating new one" && \
+    mkdir -p /etc/ImageMagick-7 && \
+    cp /tmp/policy.xml /etc/ImageMagick-7/policy.xml; \
+    fi && \
+    rm /tmp/policy.xml
 
 # Create directories for processing
 RUN mkdir -p /home/sclera/images/png_floors /home/sclera/images/svg_floors
