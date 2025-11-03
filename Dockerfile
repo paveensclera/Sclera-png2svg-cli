@@ -60,6 +60,10 @@ RUN POLICY_FILE="" && \
 # Create directories for processing
 RUN mkdir -p /home/sclera/images/png_floors /home/sclera/images/svg_floors
 
+# Copy requirements and install Python dependencies
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Copy your processing script
 COPY main.py /app/
 

@@ -2,8 +2,10 @@ import os
 import subprocess
 import logging
 import glob
+import requests
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Configure logging
 # NOTE: Enhanced logging configuration for clear terminal output and progress tracking
@@ -379,15 +381,91 @@ def check_dependencies():
     
     return all_ok
 
-def process_local_files():
+def fetch_floor_urls_from_api(api_endpoint: str) -> list:
+    """
+    Fetch the list of floor image URLs from the API endpoint
+    
+    Args:
+        api_endpoint: The API endpoint URL to fetch floor URLs from
+    
+    Returns:
+        List of floor image URLs, or empty list if request fails
+    """
+    try:
+        logger.info(f"🌐 Fetching floor URLs from API: {api_endpoint}")
+        
+        response = requests.get(api_endpoint, timeout=30)
+        response.raise_for_status()  # Raise exception for bad status codes
+        
+        urls = response.json()
+        
+        if not isinstance(urls, list):
+            logger.error(f"❌ API response is not a list: {type(urls)}")
+            return []
+        
+        logger.info(f"✅ Successfully fetched {len(urls)} floor URLs from API")
+        return urls
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ API request timed out after 30 seconds")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Failed to fetch floor URLs from API: {str(e)}")
+        return []
+    except ValueError as e:
+        logger.error(f"❌ Failed to parse API response as JSON: {str(e)}")
+        return []
+
+def extract_filenames_from_urls(urls: list) -> list:
+    """
+    Extract filenames from a list of URLs
+    
+    Args:
+        urls: List of full URLs like "http://localhost:8888/images/floors/033813a3-31cc-11ee-9e48-7becb817b0ad_15642127873072412.png"
+    
+    Returns:
+        List of filenames like ["033813a3-31cc-11ee-9e48-7becb817b0ad_15642127873072412.png"]
+    """
+    filenames = []
+    
+    for url in urls:
+        try:
+            # Parse URL and extract the filename from the path
+            parsed_url = urlparse(url)
+            path = parsed_url.path
+            
+            # Extract filename from the path
+            filename = os.path.basename(path)
+            
+            if filename:
+                filenames.append(filename)
+                logger.debug(f"   📄 Extracted filename: {filename}")
+            else:
+                logger.warning(f"   ⚠️  Could not extract filename from URL: {url}")
+                
+        except Exception as e:
+            logger.warning(f"   ⚠️  Failed to parse URL: {url} - {str(e)}")
+    
+    logger.info(f"📋 Extracted {len(filenames)} filenames from URLs")
+    return filenames
+
+def process_local_files(filter_filenames: list = None):
     """
     NOTE: Main function for local file processing
     Scans INPUT_DIR for PNG files and converts them to SVG in OUTPUT_DIR
+    
+    Args:
+        filter_filenames: Optional list of filenames to process. If provided, only these files will be processed.
+                         If None, all PNG files in INPUT_DIR will be processed.
     """
     print("="*80)  # NOTE: Visual separator for terminal output
     logger.info(f"🚀 STARTING LOCAL FILE PROCESSING")
     logger.info(f"📁 Input directory:  {INPUT_DIR}")
     logger.info(f"📁 Output directory: {OUTPUT_DIR}")
+    if filter_filenames:
+        logger.info(f"🔍 Filter mode: Processing only {len(filter_filenames)} specific files from API")
+    else:
+        logger.info(f"🔍 Mode: Processing all PNG files in directory")
     print("="*80)
     
     # NOTE: Check dependencies first
@@ -399,17 +477,34 @@ def process_local_files():
     
     # NOTE: Find all PNG files in input directory
     png_pattern = str(INPUT_DIR / "*.png")
-    png_files = glob.glob(png_pattern)
+    all_png_files = glob.glob(png_pattern)
     
-    if not png_files:
-        logger.warning(f"❌ No PNG files found in {INPUT_DIR}")
-        print("="*80)
-        return False
+    # NOTE: Apply filename filter if provided
+    if filter_filenames:
+        # Create a set for faster lookup
+        filter_set = set(filter_filenames)
+        png_files = [f for f in all_png_files if os.path.basename(f) in filter_set]
+        
+        logger.info(f"📊 Found {len(all_png_files)} total PNG files in directory")
+        logger.info(f"🎯 Filtered to {len(png_files)} files based on API response")
+        
+        if not png_files:
+            logger.warning(f"❌ No matching PNG files found after filtering")
+            logger.warning(f"   API requested: {len(filter_filenames)} files")
+            logger.warning(f"   Available in directory: {len(all_png_files)} files")
+            print("="*80)
+            return False
+    else:
+        png_files = all_png_files
+        if not png_files:
+            logger.warning(f"❌ No PNG files found in {INPUT_DIR}")
+            print("="*80)
+            return False
     
     # NOTE: Sort files for consistent processing order
     png_files.sort()
     total_files = len(png_files)
-    logger.info(f"📊 Found {total_files} PNG files to process")
+    logger.info(f"📊 Processing {total_files} PNG files")
     print("="*80)
     
     processed_count = 0
@@ -471,13 +566,60 @@ def process_local_files():
     print("="*80)
     return True
 
+def process_floors_from_api(api_endpoint: str):
+    """
+    Fetch floor URLs from API and process only those specific floors
+    
+    Args:
+        api_endpoint: The API endpoint URL that returns list of floor image URLs
+    
+    Returns:
+        bool: True if processing completed successfully, False otherwise
+    """
+    print("\n" + "="*80)
+    logger.info(f"🌐 API-BASED FLOOR PROCESSING MODE")
+    logger.info(f"📡 API Endpoint: {api_endpoint}")
+    print("="*80)
+    
+    # Step 1: Fetch URLs from API
+    floor_urls = fetch_floor_urls_from_api(api_endpoint)
+    
+    if not floor_urls:
+        logger.error("❌ No floor URLs fetched from API. Cannot proceed.")
+        return False
+    
+    # Step 2: Extract filenames from URLs
+    logger.info(f"🔍 Extracting filenames from {len(floor_urls)} URLs...")
+    filenames = extract_filenames_from_urls(floor_urls)
+    
+    if not filenames:
+        logger.error("❌ No filenames extracted from URLs. Cannot proceed.")
+        return False
+    
+    logger.info(f"✅ Successfully extracted {len(filenames)} filenames")
+    logger.info(f"📋 Sample filenames:")
+    for i, filename in enumerate(filenames[:5], 1):  # Show first 5
+        logger.info(f"   {i}. {filename}")
+    if len(filenames) > 5:
+        logger.info(f"   ... and {len(filenames) - 5} more")
+    
+    print("="*80)
+    
+    # Step 3: Process only the filtered files
+    logger.info(f"🎯 Starting filtered processing of {len(filenames)} floors...")
+    success = process_local_files(filter_filenames=filenames)
+    
+    return success
+
 if __name__ == "__main__":
     print("\n" + "="*80)
-    print("🗂️  FLOOR MAP PROCESSING SERVICE - LOCAL FILE CONVERTER")
+    print("🗂️  FLOOR MAP PROCESSING SERVICE - PNG to SVG CONVERTER")
     print("="*80)
-    logger.info("🚀 Starting local PNG to SVG conversion...")
+    logger.info("🚀 Starting PNG to SVG conversion...")
     logger.info(f"🐍 Python script: {__file__}")
-    logger.info(f"⚙️  Mode: Local PNG to SVG conversion")
+    
+    # NOTE: Check if API endpoint is provided via environment variable
+    API_ENDPOINT = os.getenv('API_ENDPOINT', '').strip()
     
     # NOTE: Verify required directories exist before processing
     if not INPUT_DIR.exists():
@@ -489,8 +631,14 @@ if __name__ == "__main__":
         logger.info(f"📁 Creating output directory: {OUTPUT_DIR}")
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    # NOTE: Start the local file processing
-    success = process_local_files()
+    # NOTE: Determine processing mode based on API_ENDPOINT
+    if API_ENDPOINT:
+        logger.info(f"⚙️  Mode: API-based filtering (processing specific floors from API)")
+        success = process_floors_from_api(API_ENDPOINT)
+    else:
+        logger.info(f"⚙️  Mode: Full directory processing (all PNG files)")
+        logger.info(f"💡 Tip: Set API_ENDPOINT environment variable to process only specific floors")
+        success = process_local_files()
     
     if success:
         logger.info("✅ Script completed successfully!")
