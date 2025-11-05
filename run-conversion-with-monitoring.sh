@@ -102,13 +102,20 @@ fetch_api_filenames() {
     echo -e "${YELLOW}🌐 Fetching file list from API: $API_ENDPOINT${NC}"
     
     if command -v curl >/dev/null 2>&1; then
-        local response=$(curl -s -w "\n%{http_code}" "$API_ENDPOINT" 2>/dev/null || echo "000")
-        local http_code=$(echo "$response" | tail -n 1)
+        local response=$(curl -s "$API_ENDPOINT" 2>/dev/null)
         
-        if [ "$http_code" = "200" ]; then
+        if [ $? -eq 0 ] && [ -n "$response" ]; then
             echo -e "${GREEN}✅ API request successful${NC}"
+            echo ""
+            
+            # Extract and display all filenames from URLs
+            echo -e "${CYAN}📋 Files to process from API:${NC}"
+            echo "$response" | grep -o '"[^"]*\.png"' | sed 's/"//g' | while IFS= read -r url; do
+                filename=$(basename "$url")
+                echo -e "   • $filename"
+            done
         else
-            echo -e "${YELLOW}⚠️  API request failed (HTTP $http_code), will process all files${NC}"
+            echo -e "${YELLOW}⚠️  API request failed, will process all files${NC}"
         fi
     else
         echo -e "${YELLOW}⚠️  curl not available, skipping API check${NC}"
@@ -138,14 +145,12 @@ show_system_resources() {
     echo ""
 }
 
-# Monitor container resources in real-time
+# Monitor container resources silently (collect data only)
 monitor_container() {
     local container_id="$1"
     
     # Initialize stats file
     echo "timestamp,cpu_percent,memory_gb" > "$STATS_FILE"
-    
-    local sample_count=0
     
     while docker ps --filter "id=$container_id" --format "{{.ID}}" | grep -q "$container_id"; do
         # Get Docker stats
@@ -177,19 +182,47 @@ monitor_container() {
                 ;;
         esac
         
-        # Save to file
+        # Save to file with current timestamp
         echo "$(date +%s),$cpu_percent,$mem_gb" >> "$STATS_FILE"
-        
-        # Display periodic stats (every 5 seconds) instead of constant updates
-        sample_count=$((sample_count + 1))
-        if [ $((sample_count % 5)) -eq 0 ]; then
-            echo -e "${CYAN}[Resources]${NC} 💻 CPU: ${BOLD}${cpu_percent}%${NC} | 🧠 RAM: ${BOLD}${mem_gb} GB${NC}"
-        fi
         
         sleep $MONITOR_INTERVAL
     done
+}
+
+# Get current resource usage
+get_current_resources() {
+    local container_id="$1"
     
-    echo ""
+    # Get Docker stats
+    local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B")
+    
+    # Parse CPU percentage
+    local cpu_raw=$(echo "$stats" | cut -d',' -f1)
+    local cpu_percent=$(echo "$cpu_raw" | sed 's/%//')
+    
+    # Parse memory usage
+    local mem_raw=$(echo "$stats" | cut -d',' -f2 | awk '{print $1}')
+    local mem_unit=$(echo "$mem_raw" | sed 's/[0-9.]//g')
+    local mem_value=$(echo "$mem_raw" | sed 's/[^0-9.]//g')
+    
+    # Convert to GB
+    local mem_gb=0
+    case "$mem_unit" in
+        GiB|GB|G)
+            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1}')
+            ;;
+        MiB|MB|M)
+            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024}')
+            ;;
+        KiB|KB|K)
+            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024/1024}')
+            ;;
+        *)
+            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024/1024/1024}')
+            ;;
+    esac
+    
+    echo "${cpu_percent},${mem_gb}"
 }
 
 # Calculate and display resource summary
@@ -291,21 +324,18 @@ check_results() {
     
     if [ "$SVG_COUNT" -gt 0 ]; then
         echo ""
-        echo -e "${YELLOW}📁 Recently generated files (last 10):${NC}"
+        echo -e "${YELLOW}📁 All generated SVG files:${NC}"
+        echo ""
         
         find "$SVG_OUTPUT_DIR" -name "*.svg" -type f -printf "%T@ %s %f\n" 2>/dev/null | \
-        sort -rn | head -10 | \
+        sort -rn | \
         awk '{
             size_mb = $2 / 1024 / 1024;
-            printf "   %2d. %-60s (%.2f MB)\n", NR, $3, size_mb;
+            printf "   %3d. %-65s (%.2f MB)\n", NR, $3, size_mb;
         }'
         
-        if [ "$SVG_COUNT" -gt 10 ]; then
-            echo -e "${YELLOW}   ... and $((SVG_COUNT - 10)) more files${NC}"
-        fi
-        
         echo ""
-        echo -e "${GREEN}✨ Files are ready in: $SVG_OUTPUT_DIR${NC}"
+        echo -e "${GREEN}✨ All files are ready in: $SVG_OUTPUT_DIR${NC}"
     else
         echo -e "${YELLOW}⚠️  No SVG files found in output directory${NC}"
     fi
@@ -347,30 +377,39 @@ main() {
         exit 1
     fi
     
-    # Start monitoring in background
+    # Start monitoring in background (silent data collection)
     monitor_container "$CONTAINER_ID" &
     MONITOR_PID=$!
     
     # Small delay to let monitoring start
     sleep 1
     
-    # Show container logs in real-time (this is the conversion progress!)
+    # Show container logs with resource tracking after each file
     echo -e "${BLUE}────────────────────────────────────────────────────────────────────────────────${NC}"
     echo -e "${YELLOW}📋 Conversion Progress:${NC}"
     echo -e "${BLUE}────────────────────────────────────────────────────────────────────────────────${NC}"
     echo ""
     
-    docker logs -f "$CONTAINER_ID" 2>&1 &
-    LOGS_PID=$!
+    # Follow logs and show resources after each SUCCESS line
+    docker logs -f "$CONTAINER_ID" 2>&1 | while IFS= read -r line; do
+        echo "$line"
+        
+        # Check if this line indicates a file conversion completed
+        if echo "$line" | grep -q "🎉 SUCCESS:"; then
+            # Get current resource usage
+            local resources=$(get_current_resources "$CONTAINER_ID")
+            local cpu=$(echo "$resources" | cut -d',' -f1)
+            local mem=$(echo "$resources" | cut -d',' -f2)
+            
+            # Display resources after this file
+            echo -e "   ${CYAN}[Resources]${NC} 💻 CPU: ${BOLD}${cpu}%${NC} | 🧠 RAM: ${BOLD}${mem} GB${NC}"
+            echo ""
+        fi
+    done
     
     # Wait for container to finish
     docker wait "$CONTAINER_ID" > /dev/null 2>&1
     EXIT_CODE=$?
-    
-    # Stop logs streaming
-    if [ -n "$LOGS_PID" ] && ps -p $LOGS_PID > /dev/null 2>&1; then
-        kill $LOGS_PID 2>/dev/null || true
-    fi
     
     # Stop monitoring
     if [ -n "$MONITOR_PID" ] && ps -p $MONITOR_PID > /dev/null 2>&1; then
