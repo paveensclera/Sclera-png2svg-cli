@@ -1,5 +1,4 @@
-# Python dependencies for PNG to SVG Converter
+# Python dependencies for PNG to SVG Converter (Docker container only)
 
 # HTTP requests library for API calls
 requests>=2.28.0
-
