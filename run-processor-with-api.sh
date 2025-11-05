@@ -10,6 +10,9 @@ IMAGE_NAME="png-processor:latest"
 # You can override this by setting API_ENDPOINT environment variable before running
 API_ENDPOINT="${API_ENDPOINT:-https://a.vdms227.qagateway.scleravdms.com/map-service/api/v1/convert}"
 
+# Optional: Disable SVGO optimization (uncomment to disable)
+export ENABLE_SVGO=false
+
 echo "================================================================================"
 echo "PNG to SVG Processing - API-Filtered Mode"
 echo "================================================================================"
@@ -46,12 +49,14 @@ echo ""
 
 echo "🚀 Starting PNG processing container with API filtering..."
 echo "   (This is a temporary container that will be removed when done)"
+echo "   SVGO Optimization: ${ENABLE_SVGO}"
 echo ""
 
 # Run the processing container with API_ENDPOINT environment variable
 docker run --rm \
     --name "png-processor-api-$(date +%s)" \
     -e API_ENDPOINT="$API_ENDPOINT" \
+    -e ENABLE_SVGO="$ENABLE_SVGO" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     "$IMAGE_NAME"

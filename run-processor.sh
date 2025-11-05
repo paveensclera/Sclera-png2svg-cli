@@ -6,6 +6,9 @@ PNG_INPUT_DIR="/home/sclera/images/png_floors"
 SVG_OUTPUT_DIR="/home/sclera/images/svg_floors"
 IMAGE_NAME="png-processor:latest"
 
+# Optional: Disable SVGO optimization (uncomment to disable)
+export ENABLE_SVGO=false
+
 echo "PNG to SVG Processing - Isolated Container"
 echo "Input directory: $PNG_INPUT_DIR"
 echo "Output directory: $SVG_OUTPUT_DIR"
@@ -40,6 +43,7 @@ echo ""
 
 echo "Starting PNG processing container..."
 echo "This is a temporary container that will be removed when done."
+echo "SVGO Optimization: ${ENABLE_SVGO}"
 echo ""
 
 # Run the processing container
@@ -47,6 +51,7 @@ docker run --rm \
     --name "png-processor-$(date +%s)" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
+    -e ENABLE_SVGO="$ENABLE_SVGO" \
     "$IMAGE_NAME"
 
 # Check results

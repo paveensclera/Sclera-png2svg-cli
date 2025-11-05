@@ -24,7 +24,9 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# NOTE: Install SVG optimization tools
+# NOTE: Install SVGO v3+ for modern SVG optimization
+# Version 3.0.2 uses a config-file based approach (see svgo.config.js)
+# This is a breaking change from v1/v2 which used --enable= flags
 RUN npm install -g svgo@3.0.2
 
 # NOTE: Install svgcleaner for additional optimization
@@ -63,6 +65,9 @@ RUN mkdir -p /home/sclera/images/png_floors /home/sclera/images/svg_floors
 # Copy requirements and install Python dependencies
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy SVGO v3+ configuration
+COPY svgo.config.js /app/
 
 # Copy your processing script
 COPY main.py /app/

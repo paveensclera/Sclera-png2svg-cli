@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 # NOTE: File Storage Configuration
 STORE_PERMANENTLY = os.getenv('STORE_FILES_PERMANENTLY', 'true').lower() == 'true'
 
+# NOTE: SVG Optimization Configuration
+# Set to 'false' to disable SVGO optimization (will still use svgcleaner)
+ENABLE_SVGO = os.getenv('ENABLE_SVGO', 'true').lower() == 'true'
+
 # NOTE: Local file processing directories
 INPUT_DIR = Path("/home/sclera/images/png_floors")
 OUTPUT_DIR = Path("/home/sclera/images/svg_floors")
@@ -133,11 +137,13 @@ def standardize_svg_for_frontend(svg_path: Path, output_filename: str) -> Path:
 
 def optimize_svg(svg_path: Path, output_filename: str) -> Path:
     """
-    Optimize SVG file using both svgcleaner and svgo for maximum compression and quality
+    Optimize SVG file using svgcleaner and optionally svgo for maximum compression and quality
     
     NOTE: This function applies a two-stage optimization process:
     1. svgcleaner - removes unnecessary elements and optimizes structure
-    2. svgo - further compresses and optimizes the SVG content
+    2. svgo (optional) - further compresses and optimizes the SVG content
+    
+    SVGO can be disabled by setting ENABLE_SVGO=false environment variable
     """
     try:
         original_size = svg_path.stat().st_size
@@ -181,58 +187,50 @@ def optimize_svg(svg_path: Path, output_filename: str) -> Path:
             reduction_percent = ((original_size - cleaned_size) / original_size) * 100
             logger.info(f"     ✅ svgcleaner completed. Size: {original_size} -> {cleaned_size} bytes ({reduction_percent:.1f}% reduction)")
         
-        # Stage 2: Optimize with svgo
-        # NOTE: svgo provides additional compression and modern optimization techniques
+        # Stage 2: Optimize with svgo (if enabled)
+        # NOTE: SVGO can be disabled via ENABLE_SVGO environment variable
         optimized_svg_path = TEMP_DIR / f"{output_filename}_optimized.svg"
         
-        svgo_cmd = [
-            "svgo",
-            str(cleaned_svg_path),
-            "-o", str(optimized_svg_path),
-            "--enable=removeDoctype",
-            "--enable=removeXMLProcInst", 
-            "--enable=removeComments",
-            "--enable=removeMetadata",
-            "--enable=removeEditorsNSData",
-            "--enable=cleanupAttrs",
-            "--enable=mergeStyles",
-            "--enable=inlineStyles",
-            "--enable=minifyStyles",
-            "--enable=cleanupNumericValues",
-            "--enable=convertColors",
-            "--enable=removeUnknownsAndDefaults",
-            "--enable=removeNonInheritedGroupAttrs",
-            "--enable=removeUselessStrokeAndFill",
-            "--enable=removeViewBox",
-            "--enable=cleanupEnableBackground",
-            "--enable=removeHiddenElems",
-            "--enable=removeEmptyText",
-            "--enable=convertShapeToPath",
-            "--enable=convertEllipseToCircle",
-            "--enable=moveElemsAttrsToGroup",
-            "--enable=moveGroupAttrsToElems",
-            "--enable=collapseGroups",
-            "--enable=convertPathData",
-            "--enable=convertTransform",
-            "--enable=removeEmptyAttrs",
-            "--enable=removeEmptyContainers",
-            "--enable=mergePaths",
-            "--enable=removeUnusedNS",
-            "--enable=sortDefsChildren",
-            "--enable=removeTitle",
-            "--enable=removeDesc"
-        ]
-        
-        logger.info("     🚀 Running svgo optimization...")
-        result = subprocess.run(svgo_cmd, capture_output=True, text=True, timeout=60)
-        
-        if result.returncode != 0:
-            logger.warning(f"     ⚠️  svgo failed: {result.stderr}")
-            # HACK: If svgo fails, use the svgcleaner result as fallback
-            if cleaned_svg_path.exists():
-                optimized_svg_path = cleaned_svg_path
+        if not ENABLE_SVGO:
+            # SVGO optimization is disabled - use svgcleaner result only
+            logger.info("     ⏭️  SVGO optimization disabled (ENABLE_SVGO=false)")
+            logger.info(f"     ℹ️  Using svgcleaner result only")
+            optimized_svg_path = cleaned_svg_path
+        else:
+            # SVGO optimization is enabled
+            # NOTE: SVGO v3+ configuration approach
+            # Check if custom config file exists, otherwise use inline config
+            svgo_config_path = Path(__file__).parent / "svgo.config.js"
+            
+            if svgo_config_path.exists():
+                # Use external config file for comprehensive control
+                svgo_cmd = [
+                    "svgo",
+                    str(cleaned_svg_path),
+                    "-o", str(optimized_svg_path),
+                    "--config", str(svgo_config_path)
+                ]
+                logger.info("     🚀 Running svgo optimization (using svgo.config.js)...")
             else:
-                optimized_svg_path = svg_path
+                # Fallback to inline config
+                svgo_cmd = [
+                    "svgo",
+                    str(cleaned_svg_path),
+                    "-o", str(optimized_svg_path),
+                    "--multipass",
+                    "--config", '{"plugins": [{"name": "preset-default", "params": {"overrides": {"removeViewBox": false}}}]}'
+                ]
+                logger.info("     🚀 Running svgo optimization (using inline config)...")
+            
+            result = subprocess.run(svgo_cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode != 0:
+                logger.warning(f"     ⚠️  svgo failed: {result.stderr}")
+                # HACK: If svgo fails, use the svgcleaner result as fallback
+                if cleaned_svg_path.exists():
+                    optimized_svg_path = cleaned_svg_path
+                else:
+                    optimized_svg_path = svg_path
         
         # Validate the optimized SVG
         if not optimized_svg_path.exists() or optimized_svg_path.stat().st_size < 50:
@@ -358,8 +356,11 @@ def check_dependencies():
         "ImageMagick": ["convert", "--version"],
         "Potrace": ["potrace", "--version"],
         "svgcleaner": ["svgcleaner", "--version"],
-        "svgo": ["svgo", "--version"]
     }
+    
+    # Add SVGO to checks only if it's enabled
+    if ENABLE_SVGO:
+        tools["svgo"] = ["svgo", "--version"]
     
     logger.info("🔍 Checking required dependencies...")
     all_ok = True
@@ -378,6 +379,10 @@ def check_dependencies():
         except Exception as e:
             logger.error(f"   ❌ {tool_name}: Error checking - {str(e)}")
             all_ok = False
+    
+    # Show optional tools status
+    if not ENABLE_SVGO:
+        logger.info(f"   ⏭️  svgo: Disabled (ENABLE_SVGO=false)")
     
     return all_ok
 
@@ -470,7 +475,10 @@ def process_local_files(filter_filenames: list = None):
     
     # NOTE: Check dependencies first
     if not check_dependencies():
-        logger.error("❌ Missing required dependencies. Please install ImageMagick, Potrace, svgcleaner, and svgo")
+        deps = "ImageMagick, Potrace, and svgcleaner"
+        if ENABLE_SVGO:
+            deps += ", and svgo"
+        logger.error(f"❌ Missing required dependencies. Please install {deps}")
         return False
     
     print("="*80)
@@ -630,6 +638,11 @@ if __name__ == "__main__":
     if not OUTPUT_DIR.exists():
         logger.info(f"📁 Creating output directory: {OUTPUT_DIR}")
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # NOTE: Display optimization configuration
+    logger.info(f"⚙️  SVGO Optimization: {'✅ Enabled' if ENABLE_SVGO else '⏭️  Disabled (using svgcleaner only)'}")
+    if not ENABLE_SVGO:
+        logger.info(f"💡 Tip: Set ENABLE_SVGO=true to enable additional SVGO optimization")
     
     # NOTE: Determine processing mode based on API_ENDPOINT
     if API_ENDPOINT:
