@@ -454,6 +454,95 @@ def extract_filenames_from_urls(urls: list) -> list:
     logger.info(f"📋 Extracted {len(filenames)} filenames from URLs")
     return filenames
 
+def validate_file_readability(file_path: Path) -> tuple[bool, str]:
+    """
+    Validate that a file exists and is readable
+    
+    Args:
+        file_path: Path to the file to validate
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    try:
+        # Check if file exists
+        if not file_path.exists():
+            return False, "File does not exist"
+        
+        # Check if it's actually a file (not a directory)
+        if not file_path.is_file():
+            return False, "Path is not a file"
+        
+        # Check if file is readable
+        if not os.access(file_path, os.R_OK):
+            return False, "File is not readable (permission denied)"
+        
+        # Check if file has content
+        file_size = file_path.stat().st_size
+        if file_size == 0:
+            return False, "File is empty (0 bytes)"
+        
+        # Check if file is too small to be a valid PNG
+        if file_size < 100:
+            return False, f"File is too small ({file_size} bytes) to be a valid PNG"
+        
+        # Try to read the PNG header to verify it's a valid PNG file
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(8)
+                # PNG magic number: 89 50 4E 47 0D 0A 1A 0A
+                if header != b'\x89PNG\r\n\x1a\n':
+                    return False, "File is not a valid PNG (invalid header)"
+        except Exception as e:
+            return False, f"Cannot read file header: {str(e)}"
+        
+        return True, "OK"
+        
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
+
+def check_missing_files(requested_filenames: list, input_dir: Path) -> dict:
+    """
+    Check which files from the API are missing or invalid in the input directory
+    
+    Args:
+        requested_filenames: List of filenames requested by the API
+        input_dir: Directory where files should be located
+    
+    Returns:
+        Dictionary with 'missing', 'invalid', and 'valid' lists of filenames
+    """
+    logger.info(f"🔍 Validating {len(requested_filenames)} files from API...")
+    
+    missing_files = []
+    invalid_files = []
+    valid_files = []
+    
+    for filename in requested_filenames:
+        file_path = input_dir / filename
+        is_valid, error_msg = validate_file_readability(file_path)
+        
+        if not file_path.exists():
+            missing_files.append(filename)
+            logger.warning(f"   ❌ MISSING: {filename}")
+        elif not is_valid:
+            invalid_files.append((filename, error_msg))
+            logger.warning(f"   ⚠️  INVALID: {filename} - {error_msg}")
+        else:
+            valid_files.append(filename)
+    
+    # Summary of validation
+    logger.info(f"✅ Validation complete:")
+    logger.info(f"   ✅ Valid files: {len(valid_files)}")
+    logger.info(f"   ❌ Missing files: {len(missing_files)}")
+    logger.info(f"   ⚠️  Invalid files: {len(invalid_files)}")
+    
+    return {
+        'missing': missing_files,
+        'invalid': invalid_files,
+        'valid': valid_files
+    }
+
 def process_local_files(filter_filenames: list = None):
     """
     NOTE: Main function for local file processing
@@ -483,23 +572,56 @@ def process_local_files(filter_filenames: list = None):
     
     print("="*80)
     
+    # Track missing files separately
+    missing_files = []
+    invalid_files = []
+    
     # NOTE: Find all PNG files in input directory
     png_pattern = str(INPUT_DIR / "*.png")
     all_png_files = glob.glob(png_pattern)
     
-    # NOTE: Apply filename filter if provided
+    # NOTE: Apply filename filter if provided with validation
     if filter_filenames:
+        # Validate files from API before processing
+        validation_results = check_missing_files(filter_filenames, INPUT_DIR)
+        
+        missing_files = validation_results['missing']
+        invalid_files = validation_results['invalid']
+        valid_filenames = validation_results['valid']
+        
         # Create a set for faster lookup
         filter_set = set(filter_filenames)
         png_files = [f for f in all_png_files if os.path.basename(f) in filter_set]
         
         logger.info(f"📊 Found {len(all_png_files)} total PNG files in directory")
-        logger.info(f"🎯 Filtered to {len(png_files)} files based on API response")
+        logger.info(f"🎯 Filtered to {len(png_files)} valid files to process")
+        
+        # Report missing files in detail
+        if missing_files:
+            print()
+            logger.warning(f"⚠️  MISSING FILES REPORT ({len(missing_files)} files):")
+            for i, filename in enumerate(missing_files[:10], 1):  # Show first 10
+                logger.warning(f"   {i}. {filename}")
+            if len(missing_files) > 10:
+                logger.warning(f"   ... and {len(missing_files) - 10} more missing files")
+            print()
+        
+        # Report invalid files in detail
+        if invalid_files:
+            print()
+            logger.warning(f"⚠️  INVALID FILES REPORT ({len(invalid_files)} files):")
+            for i, (filename, reason) in enumerate(invalid_files[:10], 1):  # Show first 10
+                logger.warning(f"   {i}. {filename} - {reason}")
+            if len(invalid_files) > 10:
+                logger.warning(f"   ... and {len(invalid_files) - 10} more invalid files")
+            print()
         
         if not png_files:
-            logger.warning(f"❌ No matching PNG files found after filtering")
-            logger.warning(f"   API requested: {len(filter_filenames)} files")
-            logger.warning(f"   Available in directory: {len(all_png_files)} files")
+            logger.error(f"❌ No valid PNG files found to process after validation")
+            logger.error(f"   API requested: {len(filter_filenames)} files")
+            logger.error(f"   Missing: {len(missing_files)} files")
+            logger.error(f"   Invalid: {len(invalid_files)} files")
+            logger.error(f"   Available in directory: {len(all_png_files)} files")
             print("="*80)
             return False
     else:
@@ -516,7 +638,7 @@ def process_local_files(filter_filenames: list = None):
     print("="*80)
     
     processed_count = 0
-    failed_count = 0
+    conversion_failed_count = 0
     skipped_count = 0
     
     # NOTE: Process each file individually with detailed progress tracking
@@ -549,14 +671,14 @@ def process_local_files(filter_filenames: list = None):
                 logger.info(f"   ✅ COMPLETED: {png_path.name} -> {svg_filename} ({final_size} bytes)")
                 logger.info(f"   📊 Progress: {index}/{total_files} files processed ({processed_count} successful)")
             else:
-                failed_count += 1
-                logger.error(f"   ❌ FAILED: Could not process {png_path.name}")
-                logger.info(f"   📊 Progress: {index}/{total_files} files processed ({failed_count} failed)")
+                conversion_failed_count += 1
+                logger.error(f"   ❌ CONVERSION FAILED: Could not process {png_path.name}")
+                logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
                 
         except Exception as e:
-            failed_count += 1
-            logger.error(f"   ❌ ERROR processing {png_file_path}: {str(e)}")
-            logger.info(f"   📊 Progress: {index}/{total_files} files processed ({failed_count} failed)")
+            conversion_failed_count += 1
+            logger.error(f"   ❌ PROCESSING ERROR: {png_file_path}: {str(e)}")
+            logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
     
     # NOTE: Final summary with clear visual separation
     print()
@@ -564,12 +686,29 @@ def process_local_files(filter_filenames: list = None):
     logger.info(f"🏁 LOCAL FILE PROCESSING COMPLETED!")
     logger.info(f"📊 FINAL RESULTS:")
     logger.info(f"   ✅ Processed successfully: {processed_count} files")
-    logger.info(f"   ⭐️  Skipped (already exist): {skipped_count} files") 
-    logger.info(f"   ❌ Failed: {failed_count} files")
-    logger.info(f"   📁 Total files found: {total_files}")
+    logger.info(f"   ⭐️  Skipped (already exist): {skipped_count} files")
+    
+    # Show separate counts for different types of failures
+    if filter_filenames:
+        logger.info(f"   ❌ Missing files (not in directory): {len(missing_files)} files")
+        logger.info(f"   ⚠️  Invalid files (corrupted/unreadable): {len(invalid_files)} files")
+    logger.info(f"   ❌ Conversion failures: {conversion_failed_count} files")
+    
+    total_failures = len(missing_files) + len(invalid_files) + conversion_failed_count
+    if total_failures > 0:
+        logger.warning(f"   📊 Total failures: {total_failures} files")
+    
+    if filter_filenames:
+        logger.info(f"   📁 Total requested from API: {len(filter_filenames)}")
+    else:
+        logger.info(f"   📁 Total files found: {total_files}")
     
     if processed_count > 0:
         logger.info(f"🎉 {processed_count} new SVG files created in {OUTPUT_DIR}")
+    
+    # Final status assessment
+    if total_failures > 0:
+        logger.warning(f"⚠️  Completed with {total_failures} failures")
     
     print("="*80)
     return True
