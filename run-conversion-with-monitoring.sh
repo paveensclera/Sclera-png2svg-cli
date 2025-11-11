@@ -8,7 +8,7 @@ set -e
 PNG_INPUT_DIR="${PNG_INPUT_DIR:-/home/sclera/images/png_floors}"
 SVG_OUTPUT_DIR="${SVG_OUTPUT_DIR:-/home/sclera/images/svg_floors}"
 IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
-API_ENDPOINT="${API_ENDPOINT:-https://a.vdms227.qagateway.scleravdms.com/map-service/api/v1/convert}"
+API_ENDPOINT="${API_ENDPOINT:-https://localhost:8082/api/v1/mapservice/convert}"
 ENABLE_SVGO="${ENABLE_SVGO:-false}"
 
 # Monitoring configuration
