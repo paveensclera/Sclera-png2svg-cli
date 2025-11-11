@@ -6,6 +6,12 @@ import requests
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+import math
+from utils.api_config import Data
+from utils.path_injector import PathInjector
+import xml.etree.ElementTree as ET
+from io import BytesIO
+
 
 # Configure logging
 # NOTE: Enhanced logging configuration for clear terminal output and progress tracking
@@ -797,5 +803,51 @@ if __name__ == "__main__":
     else:
         logger.error("❌ Script completed with errors!")
         exit(1)
+
+    svg_directory="./vdms_svg_outputs"  # given by png -> svg converter
+    output_directory="./uploads"     # temp folder, will write directly later
+    ET.register_namespace('', "http://www.w3.org/2000/svg")
+
+    files = []
+    
+    # assuming pngs are already converted to svgs inside the folder
+    data = Data()
+    injector = PathInjector()
+
+    for floor in os.listdir(OUTPUT_DIR):
+        
+        floor_parts = floor.split("_")
+        floor_id = floor_parts[0]
+
+
+        floor_name = data.get_floor(floor_id)
+        paths_string = data.get_paths(floor_id)
+        floor_locations = data.get_locations(floor_id)
+
+        print("This is paths string", paths_string)
+
+        with open(os.path.join(svg_directory, floor), "r") as f:
+            floor_svg_file = ET.parse(f)
+
+        root = floor_svg_file.getroot()
+
+        injector.write_into_svg_tag(root, floor_id, floor_name)
+        injector.write_location_path_tags(root, floor_locations)
+
+        injector.write_path_path_tags(root, paths_string)
+
+        # output_file_path = os.path.join(output_directory, f"{floor_id}")
+        # floor_svg_file.write(output_file_path)
+
+        # upload_response = data.upload_floor(output_file_path)
+        # print("Upload response:", upload_response)
+
+        buffer = BytesIO()
+
+        floor_svg_file.write(buffer)
+        buffer.seek(0)
+
+        upload_response = data.upload_floor(floor_id, buffer.getvalue())
+        print("Upload response:", upload_response)
     
     print()  # NOTE: Final newline for clean terminal output

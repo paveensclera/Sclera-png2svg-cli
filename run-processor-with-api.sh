@@ -8,7 +8,7 @@ IMAGE_NAME="png-processor:latest"
 
 # API Endpoint Configuration
 # You can override this by setting API_ENDPOINT environment variable before running
-API_ENDPOINT="${API_ENDPOINT:-http://localhost:8082/api/v1/mapservice/convert}"
+API_ENDPOINT="${API_ENDPOINT:-http://localhost:8082/api/v1/migration/convert}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
 export ENABLE_SVGO=false
