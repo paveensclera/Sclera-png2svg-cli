@@ -4,11 +4,11 @@
 # Configuration
 PNG_INPUT_DIR="/home/sclera/images/png_floors"
 SVG_OUTPUT_DIR="/home/sclera/images/svg_floors"
-IMAGE_NAME="png-processor:latest"
+IMAGE_NAME="migration"
 
 # API Endpoint Configuration
 # You can override this by setting API_ENDPOINT environment variable before running
-API_ENDPOINT="${API_ENDPOINT:-http://localhost:8082/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-https://a.vdms227.qagateway.scleravdms.com/map-service/api/v1/migration/convert}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
 export ENABLE_SVGO=false
@@ -59,6 +59,9 @@ docker run --rm \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
+    -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
+    --add-host=host.docker.internal:host-gateway \
+    -e BASE_URL=http://host.docker.internal:8082/api/v1/migration \
     "$IMAGE_NAME"
 
 # Check results

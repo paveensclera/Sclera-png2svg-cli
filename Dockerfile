@@ -71,7 +71,7 @@ COPY svgo.config.js /app/
 
 # Copy your processing script
 COPY main.py /app/
-
+COPY utils /app/utils
 # Create non-root user for security
 RUN groupadd -r processor && useradd -r -g processor processor \
     && chown -R processor:processor /app /home/sclera

@@ -12,7 +12,7 @@ echo ""
 
 # Build the isolated PNG processor image
 echo "Building isolated PNG processor..."
-docker build -t png-processor:latest .
+docker build -t migration:latest .
 
 if [ $? -ne 0 ]; then
     echo "Build failed! Check the error messages above."
@@ -25,7 +25,7 @@ echo "Build completed successfully!"
 # Test the image
 echo ""
 echo "Testing the container dependencies..."
-docker run --rm png-processor:latest python -c "
+docker run --rm migration:latest python -c "
 import subprocess
 import sys
 
