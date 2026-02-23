@@ -8,7 +8,7 @@ IMAGE_NAME="migration"
 
 # API Endpoint Configuration
 # You can override this by setting API_ENDPOINT environment variable before running
-API_ENDPOINT="${API_ENDPOINT:-https://localhost:8096/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-https://localhost:8092/api/v1/migration/convert}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
 export ENABLE_SVGO=false
@@ -61,7 +61,7 @@ docker run --rm \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
     --add-host=host.docker.internal:host-gateway \
-    -e BASE_URL=http://host.docker.internal:8096/api/v1/migration \
+    -e BASE_URL=http://host.docker.internal:8092/api/v1/migration \
     "$IMAGE_NAME"
 
 # Check results

@@ -8,7 +8,7 @@ set -e
 PNG_INPUT_DIR="${PNG_INPUT_DIR:-/home/sclera/images/png_floors}"
 SVG_OUTPUT_DIR="${SVG_OUTPUT_DIR:-/home/sclera/images/svg_floors}"
 IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
-API_ENDPOINT="${API_ENDPOINT:-http://localhost:8096/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-http://localhost:8092/api/v1/migration/convert}"
 ENABLE_SVGO="${ENABLE_SVGO:-false}"
 
 # Monitoring configuration
