@@ -3,10 +3,10 @@ import subprocess
 import logging
 import glob
 import requests
-from datetime import datetime
+from datetime import time
 from pathlib import Path
 from urllib.parse import urlparse
-import math
+import time
 from utils.api_config import Data
 from utils.path_injector import PathInjector
 import xml.etree.ElementTree as ET
@@ -96,9 +96,12 @@ def standardize_svg_for_frontend(svg_path: Path, output_filename: str) -> Path:
             svg_element = dom.getElementsByTagName('svg')[0]
             
             # NOTE: Set the same dimensions as the frontend code expects
+            # Removed forced Dimension
+            # Was working for potrace but vtracer has its own dimension handling that can conflict with hardcoded values
+            # svg_element.setAttribute('width', '500')
+            # svg_element.setAttribute('height', '100%')
             svg_element.setAttribute('overflow', 'visible')
-            svg_element.setAttribute('width', '500')
-            svg_element.setAttribute('height', '100%')
+            
             
             # NOTE: Add white background rectangle to ensure consistent background
             # This ensures the SVG has an explicit white background regardless of viewer
@@ -270,57 +273,96 @@ def optimize_svg(svg_path: Path, output_filename: str) -> Path:
         return svg_path
 
 def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
-    """Convert PNG to SVG using ImageMagick and Potrace for local file processing"""
+    """Convert PNG to SVG using Vtracer for local file processing"""
     try:
+        
         # NOTE: Generate temporary filename for intermediate processing
         temp_filename = png_path.stem + "_temp"
-        pbm_path = TEMP_DIR / f"{temp_filename}.pbm"
         temp_svg_path = TEMP_DIR / f"{temp_filename}.svg"
 
-        # NOTE: Enhanced logging for clear progress tracking
         logger.info(f"📄 CONVERTING: {png_path.name} -> {output_svg_path.name}")
         logger.info(f"   📂 Input:  {png_path}")
         logger.info(f"   📂 Output: {output_svg_path}")
 
-        # Step 1: Convert PNG to PBM using ImageMagick
-        logger.info(f"   🖼️  Step 1/4: Converting PNG to PBM using ImageMagick...")
-        imagemagick_cmd = [
-            "convert", str(png_path),
-            "-threshold", "99%",
-            str(pbm_path)
-        ]
-        result = subprocess.run(imagemagick_cmd, capture_output=True, text=True, timeout=300) # 120 seconds is too short for large PNG files
-        if result.returncode != 0:
-            logger.error(f"   ❌ ImageMagick conversion failed for {png_path}: {result.stderr}")
-            return None
-        logger.info(f"   ✅ Step 1/4 completed: PBM file created ({pbm_path.stat().st_size} bytes)")
+        logger.info(f"   🖼️  Step 1/3: Converting PNG to SVG using VTracer...")
 
-        # Step 2: Convert PBM to SVG using Potrace
-        logger.info(f"   🖊️  Step 2/4: Converting PBM to SVG using Potrace...")
-        potrace_cmd = [
-            "potrace", str(pbm_path),
-            "-s",
-            "-o", str(temp_svg_path)
+        normalized_png = TEMP_DIR / f"{temp_filename}_normalized.png"
+
+        normalize_cmd = [
+            "convert",
+            str(png_path),
+            "-alpha", "remove",
+            "-background", "white",
+            "PNG24:" + str(normalized_png)
         ]
-        result = subprocess.run(potrace_cmd, capture_output=True, text=True, timeout=120)
+
+        result = subprocess.run(
+            normalize_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
         if result.returncode != 0:
-            logger.error(f"   ❌ Potrace conversion failed for {png_path}: {result.stderr}")
+            logger.error(f"   ❌ Image normalization failed: {result.stderr}")
+            return None
+        if not normalized_png.exists():
+            logger.error("   ❌ Normalized PNG was not created")
+            return None
+        logger.info(
+            f"   📏 Normalized PNG size: "
+            f"{normalized_png.stat().st_size} bytes"
+        )
+        vtracer_cmd = [
+            "vtracer",
+            "--input", str(normalized_png),
+            "--output", str(temp_svg_path),
+
+            "--mode", "polygon",
+            "--colormode", "color",
+            "--hierarchical", "stacked",
+
+            "--filter_speckle", "4",
+            "--color_precision", "6",
+            "--gradient_step", "8",
+            "--corner_threshold", "60",
+            "--segment_length", "4",
+            "--splice_threshold", "45"
+        ]
+        start_time = time.perf_counter()
+        result = subprocess.run(
+            vtracer_cmd,
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        end_time = time.perf_counter()
+        logger.info(
+            f"   ⏱️  VTracer execution time: "
+            f"{end_time - start_time:.2f} seconds"
+        )
+        if result.returncode != 0:
+            logger.error(
+                f"   ❌ VTracer conversion failed for {png_path}:\n"
+                f"STDOUT:\n{result.stdout}\n"
+                f"STDERR:\n{result.stderr}"
+            )
             return None
 
         # Validate initial SVG output
         if not temp_svg_path.exists() or temp_svg_path.stat().st_size < 100:
             logger.error(f"   ❌ Generated SVG file is invalid or too small for {png_path}")
             return None
-        logger.info(f"   ✅ Step 2/4 completed: SVG file created ({temp_svg_path.stat().st_size} bytes)")
+        logger.info(f"   ✅ Step 1/3 completed: SVG file created ({temp_svg_path.stat().st_size} bytes)")
 
         # Step 3: Standardize SVG for frontend compatibility
         # NOTE: This step adds consistent dimensions and white background for smooth frontend integration
-        logger.info(f"   🎨 Step 3/4: Standardizing SVG for frontend compatibility...")
+        logger.info(f"   🎨 Step 2/3: Standardizing SVG for frontend compatibility...")
         standardized_svg_path = standardize_svg_for_frontend(temp_svg_path, temp_filename)
-        logger.info(f"   ✅ Step 3/4 completed: SVG standardized for frontend")
+        logger.info(f"   ✅ Step 2/3 completed: SVG standardized for frontend")
 
         # Step 4: Optimize the SVG using svgcleaner and svgo
-        logger.info(f"   ⚡ Step 4/4: Optimizing SVG file...")
+        logger.info(f"   ⚡ Step 3/3: Optimizing SVG file...")
         optimized_svg_path = optimize_svg(standardized_svg_path, temp_filename)
         
         # NOTE: Move optimized SVG to final output location
@@ -334,10 +376,9 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
         
         # Clean up intermediate files
         logger.info(f"   🧹 Cleaning up intermediate files...")
-        try:
-            if pbm_path.exists():
-                pbm_path.unlink()
-                logger.info(f"   🗑️  Removed: {pbm_path.name}")
+        try: 
+            if normalized_png.exists():
+                normalized_png.unlink()
             if temp_svg_path.exists() and temp_svg_path != optimized_svg_path:
                 temp_svg_path.unlink()
                 logger.info(f"   🗑️  Removed: {temp_svg_path.name}")
@@ -346,9 +387,10 @@ def convert_png_to_svg_local(png_path: Path, output_svg_path: Path) -> Path:
                 logger.info(f"   🗑️  Removed: {standardized_svg_path.name}")
         except Exception as e:
             logger.warning(f"   ⚠️  Failed to clean up intermediate files: {str(e)}")
-
+        
+       
         return output_svg_path if output_svg_path.exists() else None
-
+    
     except subprocess.TimeoutExpired:
         logger.error(f"   ❌ Conversion process timed out for {png_path}")
         return None
@@ -360,7 +402,7 @@ def check_dependencies():
     """Check if required tools are available"""
     tools = {
         "ImageMagick": ["convert", "--version"],
-        "Potrace": ["potrace", "--version"],
+       "VTracer": ["vtracer", "--help"],
         "svgcleaner": ["svgcleaner", "--version"],
     }
     
@@ -570,7 +612,7 @@ def process_local_files(filter_filenames: list = None):
     
     # NOTE: Check dependencies first
     if not check_dependencies():
-        deps = "ImageMagick, Potrace, and svgcleaner"
+        deps = " VTracer, and svgcleaner"
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"❌ Missing required dependencies. Please install {deps}")
@@ -646,7 +688,7 @@ def process_local_files(filter_filenames: list = None):
     processed_count = 0
     conversion_failed_count = 0
     skipped_count = 0
-    
+    overall_start = time.perf_counter()
     # NOTE: Process each file individually with detailed progress tracking
     for index, png_file_path in enumerate(png_files, 1):
         try:
@@ -685,7 +727,8 @@ def process_local_files(filter_filenames: list = None):
             conversion_failed_count += 1
             logger.error(f"   ❌ PROCESSING ERROR: {png_file_path}: {str(e)}")
             logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
-    
+    overall_end = time.perf_counter()
+
     # NOTE: Final summary with clear visual separation
     print()
     print("="*80)
@@ -693,7 +736,10 @@ def process_local_files(filter_filenames: list = None):
     logger.info(f"📊 FINAL RESULTS:")
     logger.info(f"   ✅ Processed successfully: {processed_count} files")
     logger.info(f"   ⭐️  Skipped (already exist): {skipped_count} files")
-    
+    logger.info(
+            f"   🕒 Total processing time: "
+            f"{overall_end - overall_start:.2f} seconds"
+        )
     # Show separate counts for different types of failures
     if filter_filenames:
         logger.info(f"   ❌ Missing files (not in directory): {len(missing_files)} files")
