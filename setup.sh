@@ -12,7 +12,7 @@ echo ""
 
 # Build the isolated PNG processor image
 echo "Building isolated PNG processor..."
-docker build -t migration:latest .
+docker build -t png-processor:latest .
 
 if [ $? -ne 0 ]; then
     echo "Build failed! Check the error messages above."
@@ -25,7 +25,7 @@ echo "Build completed successfully!"
 # Test the image
 echo ""
 echo "Testing the container dependencies..."
-docker run --rm migration:latest python -c "
+docker run --rm png-processor:latest python -c "
 import subprocess
 import sys
 
@@ -46,7 +46,7 @@ print('Testing dependencies...')
 success = True
 success &= test_tool(['python', '--version'], 'Python')
 success &= test_tool(['convert', '-version'], 'ImageMagick')
-success &= test_tool(['potrace', '--version'], 'Potrace')
+success &= test_tool(['vtracer', '--help'], 'VTracer')
 success &= test_tool(['svgcleaner', '--version'], 'svgcleaner')
 success &= test_tool(['svgo', '--version'], 'svgo')
 
