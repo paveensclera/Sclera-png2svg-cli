@@ -28,7 +28,16 @@ class PathInjector:
     '''
     def write_location_path_tags(self, root, floor_locations):
         viewbox = root.attrib.get("viewBox")
-        _, _, width, height = map(float, viewbox.split())
+        if viewbox:
+            _, _, width, height = map(float, viewbox.split())
+        else:
+            width = float(root.attrib.get("width", 0))
+            height = float(root.attrib.get("height", 0))
+
+            if width == 0 or height == 0:
+                raise ValueError("SVG missing both viewBox and width/height")
+
+            root.set("viewBox", f"0 0 {width} {height}")
 
 
 
@@ -147,7 +156,17 @@ class PathInjector:
         
         # Extract viewBox dimensions
         viewbox = root.attrib.get("viewBox")
-        _, _, width, height = map(float, viewbox.split())
+
+        if viewbox:
+            _, _, width, height = map(float, viewbox.split())
+        else:
+            width = float(root.attrib.get("width", 0))
+            height = float(root.attrib.get("height", 0))
+
+            if width == 0 or height == 0:
+                raise ValueError("SVG missing both viewBox and width/height")
+
+            root.set("viewBox", f"0 0 {width} {height}")
 
         new_paths = []
 
