@@ -4,7 +4,7 @@
 # Configuration
 PNG_INPUT_DIR="/home/sclera/images/png_floors"
 SVG_OUTPUT_DIR="/home/sclera/images/svg_floors"
-IMAGE_NAME="migration"
+IMAGE_NAME="png-processor:latest"
 
 # API Endpoint Configuration
 # You can override this by setting API_ENDPOINT environment variable before running
@@ -61,7 +61,7 @@ docker run --rm \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
     --add-host=host.docker.internal:host-gateway \
-    -e BASE_URL=http://host.docker.internal:8092/api/v1/migration \
+    -e BASE_URL=https://localhost:8092/api/v1/migration \
     "$IMAGE_NAME"
 
 # Check results
