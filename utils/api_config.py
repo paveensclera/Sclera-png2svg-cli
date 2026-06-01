@@ -38,7 +38,7 @@ class Data:
 
             return formatted if formatted else None
         
-        except requests.exceptions.RequestException as e:
+        except (requests.exceptions.RequestException, ValueError) as e:
             print(f"Error fetching locations for floor {floor_id}: {e}")
             return None
 
@@ -56,12 +56,12 @@ class Data:
             return None
 
 
-    def upload_floor(self, floor_id, svg_bytes):
-        url = f"{self.base_url}/upload"
+    # def upload_floor(self, floor_id, svg_bytes):
+    #     url = f"{self.base_url}/upload"
 
-        files = {
-            "file": (floor_id, svg_bytes, "image/svg+xml")
-        }
-        response = requests.post(url, files=files)
-        response.raise_for_status()
-        return response.text
+    #     files = {
+    #         "file": (floor_id, svg_bytes, "image/svg+xml")
+    #     }
+    #     response = requests.post(url, files=files)
+    #     response.raise_for_status()
+    #     return response.text

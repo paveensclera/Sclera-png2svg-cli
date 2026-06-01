@@ -16,6 +16,7 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   imagemagick \
+  potrace \
   cargo \
   curl \
   wget \
@@ -85,4 +86,5 @@ RUN groupadd -r processor && useradd -r -g processor processor \
 USER processor
 
 # NOTE: Default command runs the processing script
-CMD ["python", "main.py"]
+ENTRYPOINT ["python", "main.py"]
+

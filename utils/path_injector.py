@@ -1,6 +1,8 @@
 import json
+import math
 import xml.etree.ElementTree as ET
 
+SVG_NS = "http://www.w3.org/2000/svg"
 
 class PathInjector:
     '''
@@ -10,8 +12,8 @@ class PathInjector:
         # print([thing for thing in root.attrib.values()])
         
         # required attributes in the <svg> tag
-        root.set("data-floor-id", id)
-        root.set("data-floor-name", name)
+        root.set("data-floor-id", str(id))
+        root.set("data-floor-name", str(name))
 
         # ? lat long values in the db were added for svg and didn't exist in cold version
             # if ne_lat and ne_long and sw_lat and sw_long:
@@ -58,11 +60,19 @@ class PathInjector:
                     location_id = location.get("id")
                     zindex = location.get("zindex", 0)
 
-                    if is_removed:
+                    if is_removed or not area_json:
                         continue
 
-                    area_data = json.loads(area_json)
-                    shape = area_data["shape"].lower()
+                    try:
+                        area_data = json.loads(area_json)
+                    except (ValueError, TypeError) as e:
+                        print(f"Error parsing area JSON for location {name}: {e}")
+                        continue
+
+                    shape = area_data.get("shape", "").lower()
+                    if not shape:
+                        continue
+
                     path_data = ""
                     points = []
 
@@ -117,7 +127,7 @@ class PathInjector:
                             for i, p in enumerate(points)
                         ) + " Z"
 
-                        path_element = ET.Element("path", {
+                        path_element = ET.Element(f"{{{SVG_NS}}}path", {
                             "d": path_data,
                             "stroke": "#3182ce",
                             "stroke-width": "2",
@@ -130,14 +140,14 @@ class PathInjector:
                             "data-shape-type": shape,
                             "data-color": "#3182ce",
                             "data-stroke-width": "2",
-                            "data-location": name if name else "Unnamed Location",
+                            "data-location": str(name) if name else "Unnamed Location",
                             "data-id": str(location_id),
                             "data-z-index": str(zindex),
                         })
                         new_paths.append(path_element)
 
-                except TypeError as e:
-                    print(f"No bounds for location: {location.get('name', 'Unknown')}")
+                except (TypeError, KeyError, IndexError) as e:
+                    print(f"Error processing location {location.get('name', 'Unknown')}: {e}")
 
             for path in new_paths:
                 root.append(path)
@@ -152,7 +162,11 @@ class PathInjector:
         if not array_of_strings:
             return
         
-        array_of_paths = json.loads(array_of_strings,)
+        try:
+            array_of_paths = json.loads(array_of_strings)
+        except (ValueError, TypeError) as e:
+            print(f"Error parsing paths JSON: {e}")
+            return
         
         # Extract viewBox dimensions
         viewbox = root.attrib.get("viewBox")
@@ -189,7 +203,8 @@ class PathInjector:
                     )
 
                     # Create <path> tag with attributes
-                    path_element = ET.Element("path", {
+                    path_element = ET.Element(f"{{{SVG_NS}}}path", {
+
                         "d": path_data,
                         "stroke": "#3182ce",
                         "stroke-width": "2",
