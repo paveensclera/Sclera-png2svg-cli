@@ -30,8 +30,13 @@ STORE_PERMANENTLY = os.getenv('STORE_FILES_PERMANENTLY', 'true').lower() == 'tru
 ENABLE_SVGO = os.getenv('ENABLE_SVGO', 'true').lower() == 'true'
 
 # NOTE: Local file processing directories
-INPUT_DIR = Path("/home/sclera/images/png_floors")
-OUTPUT_DIR = Path("/home/sclera/images/svg_floors")
+INPUT_DIR = Path(os.getenv("INPUT_DIR", "/home/sclera/images/png_floors"))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/home/sclera/images/svg_floors"))
+
+# NOTE: Conversion Engine Configuration (default to potrace)
+CONVERSION_ENGINE = os.getenv('CONVERSION_ENGINE', 'potrace').lower()
+if CONVERSION_ENGINE not in ['potrace', 'vtracer']:
+    CONVERSION_ENGINE = 'potrace'
 
 # Create directories for processing
 TEMP_DIR = Path("/tmp/floor_map_processing")
@@ -251,27 +256,19 @@ def optimize_svg(svg_content: str) -> str:
         # HACK: Return original file if optimization fails completely
         return svg_content
 
-def convert_png_to_svg_local(png_path: Path) -> str:
-    """Convert PNG to SVG using Vtracer for local file processing"""
+def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
+    """Run ImageMagick normalization and VTracer to convert PNG to SVG"""
+    temp_filename = png_path.stem + "_temp"
+    normalized_png = Path("/dev/shm") / f"{temp_filename}_normalized.png"
+    
     try:
-        
-        # NOTE: Generate temporary filename for intermediate processing
-        temp_filename = png_path.stem + "_temp"
-        temp_svg_path =  Path("/dev/shm") / f"{temp_filename}.svg"
-
-        logger.info(f"📄 CONVERTING: {png_path.name} ")
-        logger.info(f"   📂 Input:  {png_path}")
-      
-
-        logger.info(f"   🖼️  Step 1/3: Converting PNG to SVG using VTracer...")
-
-        normalized_png = Path("/dev/shm") / f"{temp_filename}_normalized.png"
-
+        logger.info(f"   🖼️  Step 1/2: Normalizing PNG using ImageMagick...")
         normalize_cmd = [
             "convert",
             str(png_path),
             "-alpha", "remove",
             "-background", "white",
+            "-resize", "4096x4096>",
             "PNG24:" + str(normalized_png)
         ]
 
@@ -284,14 +281,14 @@ def convert_png_to_svg_local(png_path: Path) -> str:
 
         if result.returncode != 0:
             logger.error(f"   ❌ Image normalization failed: {result.stderr}")
-            return None
+            return False
         if not normalized_png.exists():
             logger.error("   ❌ Normalized PNG was not created")
-            return None
-        logger.info(
-            f"   📏 Normalized PNG size: "
-            f"{normalized_png.stat().st_size} bytes"
-        )
+            return False
+        
+        logger.info(f"   📏 Normalized PNG size: {normalized_png.stat().st_size} bytes")
+        logger.info(f"   🖼️  Step 2/2: Converting PNG to SVG using VTracer...")
+        
         vtracer_cmd = [
             "vtracer",
             "--input", str(normalized_png),
@@ -299,7 +296,6 @@ def convert_png_to_svg_local(png_path: Path) -> str:
             "--mode", "polygon",
             "--colormode", "color",
             "--hierarchical", "stacked",
-
             "--filter_speckle", "4",
             "--color_precision", "6",
             "--gradient_step", "8",
@@ -315,61 +311,157 @@ def convert_png_to_svg_local(png_path: Path) -> str:
             timeout=300
         )
         end_time = time.perf_counter()
-        logger.info(
-            f"   ⏱️  VTracer execution time: "
-            f"{end_time - start_time:.2f} seconds"
-        )
+        logger.info(f"   ⏱️  VTracer execution time: {end_time - start_time:.2f} seconds")
+        
         if result.returncode != 0:
             logger.error(
-                f"   ❌ VTracer conversion failed for {png_path}:\n"
+                f"   ❌ VTracer conversion failed:\n"
                 f"STDOUT:\n{result.stdout}\n"
                 f"STDERR:\n{result.stderr}"
             )
+            return False
+        
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.error("   ❌ VTracer conversion timed out")
+        return False
+    except Exception as e:
+        logger.error(f"   ❌ VTracer conversion error: {str(e)}")
+        return False
+    finally:
+        # Clean up normalized png
+        try:
+            if normalized_png.exists():
+                normalized_png.unlink()
+        except Exception as e:
+            logger.warning(f"   ⚠️  Failed to delete normalized PNG: {str(e)}")
+
+
+def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
+    """Run ImageMagick thresholding and Potrace to convert PNG to SVG"""
+    temp_filename = png_path.stem + "_temp"
+    pbm_path = Path("/dev/shm") / f"{temp_filename}.pbm"
+    
+    try:
+        logger.info(f"   🖼️  Step 1/2: Converting PNG to PBM using ImageMagick...")
+        imagemagick_cmd = [
+            "convert", str(png_path),
+            "-threshold", "99%",
+            str(pbm_path)
+        ]
+        result = subprocess.run(
+            imagemagick_cmd,
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        if result.returncode != 0:
+            logger.error(f"   ❌ ImageMagick thresholding failed: {result.stderr}")
+            return False
+        if not pbm_path.exists():
+            logger.error("   ❌ PBM file was not created")
+            return False
+        
+        logger.info(f"   📏 PBM file size: {pbm_path.stat().st_size} bytes")
+        logger.info(f"   🖊️  Step 2/2: Converting PBM to SVG using Potrace...")
+        
+        potrace_cmd = [
+            "potrace", str(pbm_path),
+            "-s",
+            "-o", str(temp_svg_path)
+        ]
+        start_time = time.perf_counter()
+        result = subprocess.run(
+            potrace_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        end_time = time.perf_counter()
+        logger.info(f"   ⏱️  Potrace execution time: {end_time - start_time:.2f} seconds")
+        
+        if result.returncode != 0:
+            logger.error(f"   ❌ Potrace conversion failed: {result.stderr}")
+            return False
+        
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.error("   ❌ Potrace conversion timed out")
+        return False
+    except Exception as e:
+        logger.error(f"   ❌ Potrace conversion error: {str(e)}")
+        return False
+    finally:
+        # Clean up pbm file
+        try:
+            if pbm_path.exists():
+                pbm_path.unlink()
+        except Exception as e:
+            logger.warning(f"   ⚠️  Failed to delete PBM file: {str(e)}")
+
+
+def convert_png_to_svg_local(png_path: Path) -> str:
+    """Convert PNG to SVG using either Potrace or VTracer based on configuration"""
+    logger.info(f"📄 CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
+    logger.info(f"   📂 Input:  {png_path}")
+
+    # Temporary file output path
+    temp_filename = png_path.stem + "_temp"
+    temp_svg_path = Path("/dev/shm") / f"{temp_filename}.svg"
+
+    try:
+        # Step 1: Run the actual conversion tool to generate the temp SVG
+        if CONVERSION_ENGINE == "vtracer":
+            success = run_vtracer_conversion(png_path, temp_svg_path)
+        else:
+            success = run_potrace_conversion(png_path, temp_svg_path)
+
+        if not success or not temp_svg_path.exists():
+            logger.error(f"   ❌ Conversion tool failed to generate SVG for {png_path.name}")
             return None
-       
 
         # Step 2: Standardize SVG for frontend compatibility
-        # NOTE: This step adds consistent dimensions and white background for smooth frontend integration
-        logger.info(f"   🎨 Step 2/3: Standardizing SVG for frontend compatibility...")
+        logger.info(f"   🎨 Standardizing SVG for frontend compatibility...")
         with open(temp_svg_path, "r", encoding="utf-8") as f:
             svg_content = f.read()
 
-        standardized_svg_content = standardize_svg_for_frontend(
-            svg_content
-        )
-        logger.info(f"   ✅ Step 2/3 completed: SVG standardized for frontend")
+        standardized_svg_content = standardize_svg_for_frontend(svg_content)
 
-        # Step 4: Optimize the SVG using svgcleaner and svgo
-        logger.info(f"   ⚡ Step 3/3: Optimizing SVG file...")
+        # Step 3: Optimize the SVG using svgcleaner and svgo
+        logger.info(f"   ⚡ Optimizing SVG file...")
         optimized_svg_content = optimize_svg(standardized_svg_content)
-        
-        
-        
-        # Clean up intermediate files
-        logger.info(f"   🧹 Cleaning up intermediate files...")
-        try: 
-            normalized_png.unlink()
+
+        # Clean up temp SVG file
+        try:
             temp_svg_path.unlink(missing_ok=True)
         except Exception as e:
-            logger.warning(f"   ⚠️  Failed to clean up intermediate files: {str(e)}")
-        
-       
+            logger.warning(f"   ⚠️  Failed to clean up temp SVG file: {str(e)}")
+
         return optimized_svg_content
-    
-    except subprocess.TimeoutExpired:
-        logger.error(f"   ❌ Conversion process timed out for {png_path}")
-        return None
+
     except Exception as e:
-        logger.error(f"   ❌ Conversion failed for {png_path}: {str(e)}")
+        logger.error(f"   ❌ Conversion pipeline failed for {png_path.name}: {str(e)}")
+        # Cleanup in case of failure
+        try:
+            temp_svg_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         return None
+
 
 def check_dependencies():
     """Check if required tools are available"""
     tools = {
         "ImageMagick": ["convert", "--version"],
-       "VTracer": ["vtracer", "--help"],
         "svgcleaner": ["svgcleaner", "--version"],
     }
+    
+    if CONVERSION_ENGINE == "vtracer":
+        tools["VTracer"] = ["vtracer", "--help"]
+    else:
+        tools["Potrace"] = ["potrace", "--version"]
     
     # Add SVGO to checks only if it's enabled
     if ENABLE_SVGO:
@@ -577,7 +669,8 @@ def process_local_files(filter_filenames: list = None):
     
     # NOTE: Check dependencies first
     if not check_dependencies():
-        deps = " VTracer, and svgcleaner"
+        engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
+        deps = f" {engine_name}, and svgcleaner"
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"❌ Missing required dependencies. Please install {deps}")
@@ -754,7 +847,8 @@ def process_filtered_files(filter_filenames: list = None):
     
     # NOTE: Check dependencies first
     if not check_dependencies():
-        deps = " VTracer, and svgcleaner"
+        engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
+        deps = f" {engine_name}, and svgcleaner"
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"❌ Missing required dependencies. Please install {deps}")
@@ -836,6 +930,7 @@ def process_filtered_files(filter_filenames: list = None):
     # NOTE: Process each file individually with detailed progress tracking
     for index, png_file_path in enumerate(png_files, 1):
         try:
+            start = time.perf_counter()
             png_path = Path(png_file_path)
             # NOTE: Generate output SVG path with same filename but .svg extension
             svg_filename = png_path.stem + ".svg"
@@ -876,6 +971,22 @@ def process_filtered_files(filter_filenames: list = None):
             # Fix: ET.fromstring returns the root Element
             root = ET.fromstring(resultant_svg_content)
 
+            # NOTE: Register SVG namespace so ET writes tags without ns0: prefix
+            ET.register_namespace('', "http://www.w3.org/2000/svg")
+
+            # NOTE: Remove vtracer background path if it exists
+            # This path often covers the entire image and can interfere with injected paths
+            for child in list(root):
+                # Handle both namespaced and non-namespaced tags
+                tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                if tag_name == 'path' and 'd' in child.attrib:
+                    d = child.attrib['d']
+                    # Remove if it looks like a background path (starts at 0,0)
+                    if d.startswith('M0,0') or d.startswith('M 0 0'):
+                        root.remove(child)
+                        logger.info(f"   🧹 Removed vtracer background path")
+                        break
+
             injector.write_into_svg_tag(root, floor_id, floor_name)
             injector.write_location_path_tags(root, floor_locations)
 
@@ -890,12 +1001,14 @@ def process_filtered_files(filter_filenames: list = None):
             tree.write(buffer, encoding="utf-8", xml_declaration=True)
             buffer.seek(0)
 
-            upload_response = data.upload_floor(floor_id, buffer.getvalue())
-            print("Upload response:", upload_response)
+            # upload_response = data.upload_floor(floor_id, buffer.getvalue())
+            # print("Upload response:", upload_response)
             
             processed_count += 1
             final_size = len(resultant_svg_content)
+            end = time.perf_counter()
             logger.info(f"   ✅ COMPLETED: {png_path.name} -> {svg_filename} ({final_size} bytes)")
+            logger.info(f"   🕒 Processing time: {end - start:.2f} seconds")
             logger.info(f"   📊 Progress: {index}/{total_files} files processed ({processed_count} successful)")
                 
         except Exception as e:
@@ -985,17 +1098,58 @@ def process_floors_from_api(api_endpoint: str):
     
     return success
 
+def parse_arguments_and_update_config():
+    """Parse CLI arguments and update configuration globals"""
+    global CONVERSION_ENGINE, ENABLE_SVGO, INPUT_DIR, OUTPUT_DIR
+    
+    import argparse
+    parser = argparse.ArgumentParser(description="Floor Map Processing Service - PNG to SVG Converter")
+    parser.add_argument(
+        "--engine", "-e",
+        choices=["potrace", "vtracer"],
+        default=CONVERSION_ENGINE,
+        help="Conversion engine to use (default: potrace or CONVERSION_ENGINE env var)"
+    )
+    parser.add_argument(
+        "--disable-svgo",
+        action="store_true",
+        default=not ENABLE_SVGO,
+        help="Disable SVGO optimization (use svgcleaner only)"
+    )
+    parser.add_argument(
+        "--input-dir", "-i",
+        type=str,
+        default=str(INPUT_DIR),
+        help="Input directory containing PNG files"
+    )
+    parser.add_argument(
+        "--output-dir", "-o",
+        type=str,
+        default=str(OUTPUT_DIR),
+        help="Output directory for SVG files"
+    )
+    
+    # Parse arguments
+    args, unknown = parser.parse_known_args()
+    
+    CONVERSION_ENGINE = args.engine
+    ENABLE_SVGO = not args.disable_svgo
+    INPUT_DIR = Path(args.input_dir)
+    OUTPUT_DIR = Path(args.output_dir)
+    
+    return args
+
+
 if __name__ == "__main__":
     start_time = time.perf_counter()
+    args = parse_arguments_and_update_config()
 
     print("\n" + "="*80)
     print("🗂️  FLOOR MAP PROCESSING SERVICE - PNG to SVG CONVERTER")
     print("="*80)
     logger.info("🚀 Starting PNG to SVG conversion...")
     logger.info(f"🐍 Python script: {__file__}")
-    
-    # NOTE: Check if API endpoint is provided via environment variable
-    API_ENDPOINT = os.getenv('API_ENDPOINT', '').strip()
+    logger.info(f"⚙️  Conversion Engine: {CONVERSION_ENGINE.upper()}")
     
     # NOTE: Verify required directories exist before processing
     if not INPUT_DIR.exists():
@@ -1013,6 +1167,7 @@ if __name__ == "__main__":
         logger.info(f"💡 Tip: Set ENABLE_SVGO=true to enable additional SVGO optimization")
     
     # NOTE: Determine processing mode based on API_ENDPOINT
+    API_ENDPOINT = os.getenv('API_ENDPOINT', '').strip()
     if API_ENDPOINT:
         logger.info(f"⚙️  Mode: API-based filtering (processing specific floors from API)")
         success = process_floors_from_api(API_ENDPOINT)
