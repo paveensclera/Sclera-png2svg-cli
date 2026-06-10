@@ -9,13 +9,21 @@ class Data:
         self.base_url = os.getenv("BASE_URL")
 
     def get_floor(self, floor_id):
+        if not self.base_url:
+            return None
         url = f"{self.base_url}/floor/name/{floor_id}"
-
-        response = requests.get(url)
-        return response.text
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            print(f"Error fetching floor name for floor {floor_id}: {e}")
+            return None
         
 
     def get_locations(self, floor_id):
+        if not self.base_url:
+            return None
         url = f"{self.base_url}/location/{floor_id}"
 
         try:
@@ -44,6 +52,8 @@ class Data:
 
 
     def get_paths(self, floor_id):
+        if not self.base_url:
+            return None
         url = f"{self.base_url}/path/{floor_id}"
 
         try:

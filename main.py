@@ -2,17 +2,23 @@ import os
 import subprocess
 import logging
 import glob
+import traceback
+from cv2 import data
 import requests
 from datetime import time
 from pathlib import Path
 from urllib.parse import urlparse
 import time
+from utils.inject_elements import inject_elements
+from utils.resize_img_det import resize_img_det
 from utils.api_config import Data
 from utils.path_injector import PathInjector
 import xml.etree.ElementTree as ET
 from io import BytesIO
-
-
+from utils.remove_txt import remove_txt
+from utils.recognize_txt import recognize_txt
+import cv2 as cv
+import gc 
 # Configure logging
 # NOTE: Enhanced logging configuration for clear terminal output and progress tracking
 logging.basicConfig(
@@ -258,6 +264,8 @@ def optimize_svg(svg_content: str) -> str:
 
 def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     """Run ImageMagick normalization and VTracer to convert PNG to SVG"""
+    
+    
     temp_filename = png_path.stem + "_temp"
     normalized_png = Path("/dev/shm") / f"{temp_filename}_normalized.png"
     
@@ -268,7 +276,6 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             str(png_path),
             "-alpha", "remove",
             "-background", "white",
-            "-resize", "4096x4096>",
             "PNG24:" + str(normalized_png)
         ]
 
@@ -347,7 +354,7 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
         logger.info(f"   🖼️  Step 1/2: Converting PNG to PBM using ImageMagick...")
         imagemagick_cmd = [
             "convert", str(png_path),
-            "-threshold", "99%",
+            "-threshold", "98%",
             str(pbm_path)
         ]
         result = subprocess.run(
@@ -743,12 +750,15 @@ def process_local_files(filter_filenames: list = None):
     logger.info(f"📊 Processing {total_files} PNG files")
     print("="*80)
     
+    data = Data()
+    injector = PathInjector()
+    
     processed_count = 0
     conversion_failed_count = 0
     skipped_count = 0
     overall_start = time.perf_counter()
-    # NOTE: Process each file individually with detailed progress tracking
     for index, png_file_path in enumerate(png_files, 1):
+        temp_png = None
         try:
             png_path = Path(png_file_path)
             # NOTE: Generate output SVG path with same filename but .svg extension
@@ -769,24 +779,53 @@ def process_local_files(filter_filenames: list = None):
             
             # NOTE: Convert PNG to SVG using local processing function
             logger.info(f"   🎯 Starting conversion process...")
-            resultant_svg_content = convert_png_to_svg_local(png_path)
+            img, w, h = load_image(png_path)
+            detections = recognize_txt(img)  
+            img, detections = resize_img_det(img, detections)         
+            img = remove_txt(img, detections)
+            temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
+
+            cv.imwrite(str(temp_png), img)
+
+            resultant_svg_content = convert_png_to_svg_local(temp_png)
             
-            if resultant_svg_content:
-                with open(output_svg_path, "w", encoding="utf-8") as f:
-                    f.write(resultant_svg_content)
-                processed_count += 1
-                final_size = len(resultant_svg_content)
-                logger.info(f"   ✅ COMPLETED: {png_path.name} -> {svg_filename} ({final_size} bytes)")
-                logger.info(f"   📊 Progress: {index}/{total_files} files processed ({processed_count} successful)")
-            else:
+            if not resultant_svg_content:
                 conversion_failed_count += 1
                 logger.error(f"   ❌ CONVERSION FAILED: Could not process {png_path.name}")
-                logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+                continue
+                
+            floor_parts = svg_filename.split("_")
+            floor_id = floor_parts[0]
+
+            floor_name = data.get_floor(floor_id)
+            paths_string = data.get_paths(floor_id)
+            floor_locations = data.get_locations(floor_id)
+            tree = inject_elements(
+                svg=resultant_svg_content,
+                detections=detections,
+                floor_id=floor_id,
+                floor_name=floor_name,
+                floor_locations=floor_locations,
+                paths=paths_string,
+                injector=injector
+            )
+            tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
+            processed_count += 1
+            final_size = os.path.getsize(output_svg_path)
+            logger.info(f"   ✅ COMPLETED: {png_path.name} -> {svg_filename} ({final_size} bytes)")
+            logger.info(f"   📊 Progress: {index}/{total_files} files processed ({processed_count} successful)")
                 
         except Exception as e:
             conversion_failed_count += 1
             logger.error(f"   ❌ PROCESSING ERROR: {png_file_path}: {str(e)}")
             logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+        finally:
+            if temp_png and temp_png.exists():
+                try:
+                    temp_png.unlink()
+                    logger.info(f"   🧹 Cleaned up temporary file: {temp_png.name}")
+                except Exception as cleanup_err:
+                    logger.warning(f"   ⚠️  Failed to delete temp file {temp_png}: {cleanup_err}")
     overall_end = time.perf_counter()
 
     # NOTE: Final summary with clear visual separation
@@ -825,6 +864,15 @@ def process_local_files(filter_filenames: list = None):
     print("="*80)
     return True
 
+def load_image(path):
+    """
+    Loads the image from the given path and returns it along with its width and height.
+    """
+    img = cv.imread(path)
+    if img is None:
+        raise ValueError(f"Could not read image: {path}")
+    h, w = img.shape[:2]
+    return img, w, h
 
 def process_filtered_files(filter_filenames: list = None):
     """
@@ -927,10 +975,11 @@ def process_filtered_files(filter_filenames: list = None):
     conversion_failed_count = 0
     skipped_count = 0
     overall_start = time.perf_counter()
-    # NOTE: Process each file individually with detailed progress tracking
     for index, png_file_path in enumerate(png_files, 1):
+        temp_png = None
         try:
             start = time.perf_counter()
+    
             png_path = Path(png_file_path)
             # NOTE: Generate output SVG path with same filename but .svg extension
             svg_filename = png_path.stem + ".svg"
@@ -950,7 +999,17 @@ def process_filtered_files(filter_filenames: list = None):
             
             # NOTE: Convert PNG to SVG using local processing function
             logger.info(f"   🎯 Starting conversion process...")
-            resultant_svg_content = convert_png_to_svg_local(png_path)
+            # Get the Textless PNG 
+            # Convert it to SVG using local processing function
+            img, w,h  = load_image(png_path)
+            detections = recognize_txt(img)  
+            img,detections = resize_img_det(img, detections)         
+            img = remove_txt(img, detections)
+            temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
+
+            cv.imwrite(str(temp_png), img)
+
+            resultant_svg_content = convert_png_to_svg_local(temp_png)
             
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -960,48 +1019,23 @@ def process_filtered_files(filter_filenames: list = None):
             floor_parts = svg_filename.split("_")
             floor_id = floor_parts[0]
 
-
             floor_name = data.get_floor(floor_id)
             paths_string = data.get_paths(floor_id)
             floor_locations = data.get_locations(floor_id)
+            tree = inject_elements(
+                svg=resultant_svg_content,
+                detections=detections,
+                floor_id=floor_id,
+                floor_name=floor_name,
+                floor_locations=floor_locations,
+                paths=paths_string,
+                injector=injector
+            )
 
-            print("This is paths string", paths_string)
-
-            
-            # Fix: ET.fromstring returns the root Element
-            root = ET.fromstring(resultant_svg_content)
-
-            # NOTE: Register SVG namespace so ET writes tags without ns0: prefix
-            ET.register_namespace('', "http://www.w3.org/2000/svg")
-
-            # NOTE: Remove vtracer background path if it exists
-            # This path often covers the entire image and can interfere with injected paths
-            for child in list(root):
-                # Handle both namespaced and non-namespaced tags
-                tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                if tag_name == 'path' and 'd' in child.attrib:
-                    d = child.attrib['d']
-                    # Remove if it looks like a background path (starts at 0,0)
-                    if d.startswith('M0,0') or d.startswith('M 0 0'):
-                        root.remove(child)
-                        logger.info(f"   🧹 Removed vtracer background path")
-                        break
-
-            injector.write_into_svg_tag(root, floor_id, floor_name)
-            injector.write_location_path_tags(root, floor_locations)
-
-            injector.write_path_path_tags(root, paths_string)
-
-
-            # Wrap in ElementTree for writing
-            tree = ET.ElementTree(root)
             tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
-            buffer = BytesIO()
 
-            tree.write(buffer, encoding="utf-8", xml_declaration=True)
-            buffer.seek(0)
-
-            # upload_response = data.upload_floor(floor_id, buffer.getvalue())
+            # svg_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
+            # upload_response = data.upload_floor(floor_id, svg_bytes)
             # print("Upload response:", upload_response)
             
             processed_count += 1
@@ -1014,7 +1048,15 @@ def process_filtered_files(filter_filenames: list = None):
         except Exception as e:
             conversion_failed_count += 1
             logger.error(f"   ❌ PROCESSING ERROR: {png_file_path}: {str(e)}")
+            logger.error(traceback.format_exc())
             logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+        finally:
+            if temp_png and temp_png.exists():
+                try:
+                    temp_png.unlink()
+                    logger.info(f"   🧹 Cleaned up temporary file: {temp_png.name}")
+                except Exception as cleanup_err:
+                    logger.warning(f"   ⚠️  Failed to delete temp file {temp_png}: {cleanup_err}")
     overall_end = time.perf_counter()
 
     # NOTE: Final summary with clear visual separation
