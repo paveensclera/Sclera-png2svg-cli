@@ -63,8 +63,11 @@ def setup_file_logging():
 
 def write_failed_files_report(failures: list):
     """
-    Write a report of failed files to FAILED_LOGS_FILE
+    Append a report of failed files to FAILED_LOGS_FILE in table format
     """
+    if not failures:
+        return
+        
     try:
         # Get path (ensure it is initialized, fallback if not)
         failed_logs_path = os.getenv("FAILED_LOGS_FILE", str(OUTPUT_DIR / "failed_files.log"))
@@ -73,27 +76,40 @@ def write_failed_files_report(failures: list):
         # Ensure parent directory exists
         failed_logs_file.parent.mkdir(parents=True, exist_ok=True)
         
-        total_failed = len(failures)
+        # Determine if we need to write headers (file doesn't exist or is empty)
+        write_header = not failed_logs_file.exists() or failed_logs_file.stat().st_size == 0
         
+        # Determine the last index
+        last_index = 0
+        if not write_header:
+            import re
+            try:
+                with open(failed_logs_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        match = re.match(r'^\|\s*(\d+)\s*\|', line)
+                        if match:
+                            last_index = int(match.group(1))
+            except Exception as read_err:
+                logger.warning(f"⚠️ Could not read last index from failed_files.log: {read_err}")
+                
         import datetime
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        with open(failed_logs_file, "w", encoding="utf-8") as f:
-            f.write("="*80 + "\n")
-            f.write("🗂️  FAILED FILES REPORT\n")
-            f.write(f"📅 Timestamp: {timestamp}\n")
-            f.write(f"📊 Total Failed Files: {total_failed}\n")
-            f.write("="*80 + "\n\n")
-            
-            if total_failed == 0:
-                f.write("🎉 No files failed to process!\n")
-            else:
-                for idx, failure in enumerate(failures, 1):
-                    f.write(f"{idx}. Filename: {failure['filename']}\n")
-                    f.write(f"   Reason:   {failure['reason']}\n")
-                    f.write("-" * 50 + "\n")
-                    
-        logger.info(f"📋 Failed files report written to: {failed_logs_path} (Total failures: {total_failed})")
+        with open(failed_logs_file, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write("| Index | Filename | Timestamp | Reason |\n")
+                f.write("| :--- | :--- | :--- | :--- |\n")
+                
+            for idx, failure in enumerate(failures, 1):
+                current_idx = last_index + idx
+                filename = failure['filename']
+                reason = failure['reason']
+                # Escape any pipes in the reason or filename to preserve markdown table structure
+                filename_clean = str(filename).replace("|", "\\|")
+                reason_clean = str(reason).replace("|", "\\|").replace("\n", " ")
+                f.write(f"| {current_idx} | {filename_clean} | {timestamp} | {reason_clean} |\n")
+                
+        logger.info(f"📋 Failed files appended to: {failed_logs_path} (Added {len(failures)} failures, new last index: {last_index + len(failures)})")
     except Exception as e:
         logger.error(f"❌ Failed to write failed files report: {str(e)}")
 
