@@ -350,7 +350,7 @@ def optimize_svg(svg_content: str) -> str:
 
 def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     """Run ImageMagick normalization and VTracer to convert PNG to SVG"""
-    
+    import vtracer
     
     temp_filename = png_path.stem + "_temp"
     normalized_png = Path("/dev/shm") / f"{temp_filename}_normalized.png"
@@ -358,11 +358,12 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     try:
         logger.info(f"   🖼️  Step 1/2: Normalizing PNG using ImageMagick...")
         normalize_cmd = [
-            "convert",
-            str(png_path),
-            "-alpha", "remove",
+            "magick", str(png_path),
+            "-depth", "8",
             "-background", "white",
-            "PNG24:" + str(normalized_png)
+            "-alpha", "off",
+            "-alpha", "remove",
+            str(normalized_png)
         ]
 
         result = subprocess.run(
@@ -382,43 +383,25 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
         logger.info(f"   📏 Normalized PNG size: {normalized_png.stat().st_size} bytes")
         logger.info(f"   🖼️  Step 2/2: Converting PNG to SVG using VTracer...")
         
-        vtracer_cmd = [
-            "vtracer",
-            "--input", str(normalized_png),
-            "--output", str(temp_svg_path),
-            "--mode", "polygon",
-            "--colormode", "color",
-            "--hierarchical", "stacked",
-            "--filter_speckle", "4",
-            "--color_precision", "6",
-            "--gradient_step", "8",
-            "--corner_threshold", "60",
-            "--segment_length", "4",
-            "--splice_threshold", "45"
-        ]
         start_time = time.perf_counter()
-        result = subprocess.run(
-            vtracer_cmd,
-            capture_output=True,
-            text=True,
-            timeout=300
+        vtracer.convert_image_to_svg_py(
+            str(normalized_png),
+            str(temp_svg_path),
+            mode="polygon",
+            colormode="color",
+            hierarchical="stacked",
+            filter_speckle=4,
+            color_precision=6,
+            layer_difference=8,
+            corner_threshold=60,
+            length_threshold=4.0, 
+            splice_threshold=45
         )
         end_time = time.perf_counter()
-        logger.info(f"   ⏱️  VTracer execution time: {end_time - start_time:.2f} seconds")
         
-        if result.returncode != 0:
-            logger.error(
-                f"   ❌ VTracer conversion failed:\n"
-                f"STDOUT:\n{result.stdout}\n"
-                f"STDERR:\n{result.stderr}"
-            )
-            return False
-        
+        logger.info(f"   ⏱️ VTracer execution time: {end_time - start_time:.2f} seconds")
         return True
 
-    except subprocess.TimeoutExpired:
-        logger.error("   ❌ VTracer conversion timed out")
-        return False
     except Exception as e:
         logger.error(f"   ❌ VTracer conversion error: {str(e)}")
         return False
@@ -885,8 +868,8 @@ def process_local_files(filter_filenames: list = None):
             
             # NOTE: Convert PNG to SVG using local processing function
             logger.info(f"   🎯 Starting conversion process...")
-            img, w, h = load_image(png_path)
-            detections = recognize_txt(img)  
+            output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
+            img, detections = recognize_txt(str(png_path), output_thin=str(output_thin))
             img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
             temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
@@ -1138,9 +1121,9 @@ def process_filtered_files(filter_filenames: list = None):
             logger.info(f"   🎯 Starting conversion process...")
             # Get the Textless PNG 
             # Convert it to SVG using local processing function
-            img, w,h  = load_image(png_path)
-            detections = recognize_txt(img)  
-            img,detections = resize_img_det(img, detections)         
+            output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
+            img, detections = recognize_txt(str(png_path), output_thin=str(output_thin))
+            img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
             temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
 
