@@ -1,7 +1,6 @@
 import cv2 as cv
 import numpy as np
 
-
 def build_exact_mask(polys, h, w, thresh, kernel):
     mask = np.zeros((h, w), dtype=np.uint8)
     if not polys: 
@@ -11,7 +10,7 @@ def build_exact_mask(polys, h, w, thresh, kernel):
     return cv.dilate(mask, kernel, iterations=1)
 
 
-def remove_txt(img, detections, min_wall_length=80):
+def remove_txt(img, detections, output=None, min_wall_length=80):
     h, w = img.shape[:2]
     
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
@@ -54,9 +53,13 @@ def remove_txt(img, detections, min_wall_length=80):
     ns_mask = build_exact_mask(ns_polys, h, w, thresh, kernel)
     telea_mask = build_exact_mask(telea_polys, h, w, thresh, kernel)
 
+    img = img.copy()
     if telea_polys:
         img = cv.inpaint(img, telea_mask, inpaintRadius=1, flags=cv.INPAINT_TELEA)
     if ns_polys:
         img = cv.inpaint(img, ns_mask, inpaintRadius=1, flags=cv.INPAINT_NS)
+        
+    if output:
+        cv.imwrite(str(output), img)
 
     return img
