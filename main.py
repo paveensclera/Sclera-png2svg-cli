@@ -28,6 +28,92 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+ALL_LOGS_FILE = None
+FAILED_LOGS_FILE = None
+
+def setup_file_logging():
+    global ALL_LOGS_FILE, FAILED_LOGS_FILE
+    # Use environment variables if set, otherwise default to OUTPUT_DIR
+    all_logs_path = os.getenv("ALL_LOGS_FILE", str(OUTPUT_DIR / "all_logs.log"))
+    failed_logs_path = os.getenv("FAILED_LOGS_FILE", str(OUTPUT_DIR / "failed_files.log"))
+    
+    ALL_LOGS_FILE = Path(all_logs_path)
+    FAILED_LOGS_FILE = Path(failed_logs_path)
+    
+    # Ensure the parent directory of log files exists
+    ALL_LOGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Add FileHandler to root logger
+    root_logger = logging.getLogger()
+    
+    # Check if a FileHandler with the same path already exists to avoid duplication
+    for handler in root_logger.handlers[:]:
+        if isinstance(handler, logging.FileHandler) and os.path.abspath(handler.baseFilename) == os.path.abspath(all_logs_path):
+            return
+            
+    try:
+        file_handler = logging.FileHandler(all_logs_path, mode='a', encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S'))
+        file_handler.setLevel(logging.INFO)
+        root_logger.addHandler(file_handler)
+        logger.info(f"📝 Logging all outputs to: {all_logs_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to set up file logging: {str(e)}")
+
+
+def write_failed_files_report(failures: list):
+    """
+    Append a report of failed files to FAILED_LOGS_FILE in table format
+    """
+    if not failures:
+        return
+        
+    try:
+        # Get path (ensure it is initialized, fallback if not)
+        failed_logs_path = os.getenv("FAILED_LOGS_FILE", str(OUTPUT_DIR / "failed_files.log"))
+        failed_logs_file = Path(failed_logs_path)
+        
+        # Ensure parent directory exists
+        failed_logs_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Determine if we need to write headers (file doesn't exist or is empty)
+        write_header = not failed_logs_file.exists() or failed_logs_file.stat().st_size == 0
+        
+        # Determine the last index
+        last_index = 0
+        if not write_header:
+            import re
+            try:
+                with open(failed_logs_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        match = re.match(r'^\|\s*(\d+)\s*\|', line)
+                        if match:
+                            last_index = int(match.group(1))
+            except Exception as read_err:
+                logger.warning(f"⚠️ Could not read last index from failed_files.log: {read_err}")
+                
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        with open(failed_logs_file, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write("| Index | Filename | Timestamp | Reason |\n")
+                f.write("| :--- | :--- | :--- | :--- |\n")
+                
+            for idx, failure in enumerate(failures, 1):
+                current_idx = last_index + idx
+                filename = failure['filename']
+                reason = failure['reason']
+                # Escape any pipes in the reason or filename to preserve markdown table structure
+                filename_clean = str(filename).replace("|", "\\|")
+                reason_clean = str(reason).replace("|", "\\|").replace("\n", " ")
+                f.write(f"| {current_idx} | {filename_clean} | {timestamp} | {reason_clean} |\n")
+                
+        logger.info(f"📋 Failed files appended to: {failed_logs_path} (Added {len(failures)} failures, new last index: {last_index + len(failures)})")
+    except Exception as e:
+        logger.error(f"❌ Failed to write failed files report: {str(e)}")
+
+
 # NOTE: File Storage Configuration
 STORE_PERMANENTLY = os.getenv('STORE_FILES_PERMANENTLY', 'true').lower() == 'true'
 
@@ -638,15 +724,16 @@ def check_missing_files(requested_filenames: list, input_dir: Path) -> dict:
         'valid': valid_files
     }
 
-def process_local_files(filter_filenames: list = None): 
+def process_local_files(filter_filenames: list = None):
     """
     NOTE: Main function for local file processing
     Scans INPUT_DIR for PNG files and converts them to SVG in OUTPUT_DIR
     
     Args:
         filter_filenames: Optional list of filenames to process. If provided, only these files will be processed.
-                         If None, all PNG files in INPUT_DIR will be processed.
+                          If None, all PNG files in INPUT_DIR will be processed.
     """
+    setup_file_logging()
     print("="*80)  # NOTE: Visual separator for terminal output
     logger.info(f"🚀 STARTING LOCAL FILE PROCESSING")
     logger.info(f"📁 Input directory:  {INPUT_DIR}")
@@ -657,6 +744,8 @@ def process_local_files(filter_filenames: list = None):
         logger.info(f"🔍 Mode: Processing all PNG files in directory")
     print("="*80)
     
+    failures = []
+    
     # NOTE: Check dependencies first
     if not check_dependencies():
         engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
@@ -664,6 +753,7 @@ def process_local_files(filter_filenames: list = None):
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"❌ Missing required dependencies. Please install {deps}")
+        write_failed_files_report(failures)
         return False
     
     print("="*80)
@@ -684,6 +774,20 @@ def process_local_files(filter_filenames: list = None):
         missing_files = validation_results['missing']
         invalid_files = validation_results['invalid']
         valid_filenames = validation_results['valid']
+        
+        # Record missing files in failures list
+        for filename in missing_files:
+            failures.append({
+                "filename": filename,
+                "reason": "File does not exist in input directory"
+            })
+            
+        # Record invalid files in failures list
+        for filename, reason in invalid_files:
+            failures.append({
+                "filename": filename,
+                "reason": f"Invalid or unreadable PNG file: {reason}"
+            })
         
         # Create a set for faster lookup
         filter_set = set(filter_filenames)
@@ -719,12 +823,14 @@ def process_local_files(filter_filenames: list = None):
             logger.error(f"   Invalid: {len(invalid_files)} files")
             logger.error(f"   Available in directory: {len(all_png_files)} files")
             print("="*80)
+            write_failed_files_report(failures)
             return False
     else:
         png_files = all_png_files
         if not png_files:
             logger.warning(f"❌ No PNG files found in {INPUT_DIR}")
             print("="*80)
+            write_failed_files_report(failures)
             return False
     
     # NOTE: Sort files for consistent processing order
@@ -767,19 +873,23 @@ def process_local_files(filter_filenames: list = None):
             img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
             temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
-
+ 
             cv.imwrite(str(temp_png), img)
-
+ 
             resultant_svg_content = convert_png_to_svg_local(temp_png)
             
             if not resultant_svg_content:
                 conversion_failed_count += 1
                 logger.error(f"   ❌ CONVERSION FAILED: Could not process {png_path.name}")
+                failures.append({
+                    "filename": png_path.name,
+                    "reason": "Conversion pipeline failed to generate SVG content"
+                })
                 continue
                 
             floor_parts = svg_filename.split("_")
             floor_id = floor_parts[0]
-
+ 
             floor_name = data.get_floor(floor_id)
             paths_string = data.get_paths(floor_id)
             floor_locations = data.get_locations(floor_id)
@@ -802,6 +912,10 @@ def process_local_files(filter_filenames: list = None):
             conversion_failed_count += 1
             logger.error(f"   ❌ PROCESSING ERROR: {png_file_path}: {str(e)}")
             logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+            failures.append({
+                "filename": Path(png_file_path).name,
+                "reason": f"Processing exception: {str(e)}"
+            })
         finally:
             if temp_png and temp_png.exists():
                 try:
@@ -810,7 +924,7 @@ def process_local_files(filter_filenames: list = None):
                 except Exception as cleanup_err:
                     logger.warning(f"   ⚠️  Failed to delete temp file {temp_png}: {cleanup_err}")
     overall_end = time.perf_counter()
-
+ 
     # NOTE: Final summary with clear visual separation
     print()
     print("="*80)
@@ -840,6 +954,9 @@ def process_local_files(filter_filenames: list = None):
     if processed_count > 0:
         logger.info(f"🎉 {processed_count} new SVG files created in {OUTPUT_DIR}")
     
+    # Write the failed files report
+    write_failed_files_report(failures)
+    
     # Final status assessment
     if total_failures > 0:
         logger.warning(f"⚠️  Completed with {total_failures} failures")
@@ -866,6 +983,7 @@ def process_filtered_files(filter_filenames: list = None):
         filter_filenames: Optional list of filenames to process. If provided, only these files will be processed.
                          If None, all PNG files in INPUT_DIR will be processed.
     """
+    setup_file_logging()
     print("="*80)  # NOTE: Visual separator for terminal output
     logger.info(f"🚀 STARTING API-DRIVEN FILE PROCESSING")
     logger.info(f"📁 Input directory:  {INPUT_DIR}")
@@ -876,6 +994,8 @@ def process_filtered_files(filter_filenames: list = None):
         logger.info(f"🔍 Mode: Processing all PNG files in directory")
     print("="*80)
     
+    failures = []
+    
     # NOTE: Check dependencies first
     if not check_dependencies():
         engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
@@ -883,6 +1003,7 @@ def process_filtered_files(filter_filenames: list = None):
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"❌ Missing required dependencies. Please install {deps}")
+        write_failed_files_report(failures)
         return False
     
     print("="*80)
@@ -905,6 +1026,20 @@ def process_filtered_files(filter_filenames: list = None):
         missing_files = validation_results['missing']
         invalid_files = validation_results['invalid']
         valid_filenames = validation_results['valid']
+        
+        # Record missing files in failures list
+        for filename in missing_files:
+            failures.append({
+                "filename": filename,
+                "reason": "File does not exist in input directory"
+            })
+            
+        # Record invalid files in failures list
+        for filename, reason in invalid_files:
+            failures.append({
+                "filename": filename,
+                "reason": f"Invalid or unreadable PNG file: {reason}"
+            })
         
         # Create a set for faster lookup
         filter_set = set(filter_filenames)
@@ -940,12 +1075,14 @@ def process_filtered_files(filter_filenames: list = None):
             logger.error(f"   Invalid: {len(invalid_files)} files")
             logger.error(f"   Available in directory: {len(all_png_files)} files")
             print("="*80)
+            write_failed_files_report(failures)
             return False
     else:
         png_files = all_png_files
         if not png_files:
             logger.warning(f"❌ No PNG files found in {INPUT_DIR}")
             print("="*80)
+            write_failed_files_report(failures)
             return False
     
     # NOTE: Sort files for consistent processing order
@@ -997,6 +1134,10 @@ def process_filtered_files(filter_filenames: list = None):
             if not resultant_svg_content:
                 conversion_failed_count += 1
                 logger.error(f"   ❌ CONVERSION FAILED: Could not process {png_path.name}")
+                failures.append({
+                    "filename": png_path.name,
+                    "reason": "Conversion pipeline failed to generate SVG content"
+                })
                 continue
 
             floor_parts = svg_filename.split("_")
@@ -1033,6 +1174,10 @@ def process_filtered_files(filter_filenames: list = None):
             logger.error(f"   ❌ PROCESSING ERROR: {png_file_path}: {str(e)}")
             logger.error(traceback.format_exc())
             logger.info(f"   📊 Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+            failures.append({
+                "filename": Path(png_file_path).name,
+                "reason": f"Processing exception: {str(e)}"
+            })
         finally:
             if temp_png and temp_png.exists():
                 try:
@@ -1071,6 +1216,9 @@ def process_filtered_files(filter_filenames: list = None):
     if processed_count > 0:
         logger.info(f"🎉 {processed_count} new SVG files created in {OUTPUT_DIR}")
     
+    # Write the failed files report
+    write_failed_files_report(failures)
+    
     # Final status assessment
     if total_failures > 0:
         logger.warning(f"⚠️  Completed with {total_failures} failures")
@@ -1088,6 +1236,7 @@ def process_floors_from_api(api_endpoint: str):
     Returns:
         bool: True if processing completed successfully, False otherwise
     """
+    setup_file_logging()
     print("\n" + "="*80)
     logger.info(f"🌐 API-BASED FLOOR PROCESSING MODE")
     logger.info(f"📡 API Endpoint: {api_endpoint}")
@@ -1098,6 +1247,7 @@ def process_floors_from_api(api_endpoint: str):
     
     if not floor_urls:
         logger.error("❌ No floor URLs fetched from API. Cannot proceed.")
+        write_failed_files_report([])
         return False
     
     # Step 2: Extract filenames from URLs
@@ -1106,6 +1256,7 @@ def process_floors_from_api(api_endpoint: str):
     
     if not filenames:
         logger.error("❌ No filenames extracted from URLs. Cannot proceed.")
+        write_failed_files_report([])
         return False
     
     logger.info(f"✅ Successfully extracted {len(filenames)} filenames")
@@ -1185,6 +1336,8 @@ if __name__ == "__main__":
     if not OUTPUT_DIR.exists():
         logger.info(f"📁 Creating output directory: {OUTPUT_DIR}")
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        
+    setup_file_logging()
     
     # NOTE: Display optimization configuration
     logger.info(f"⚙️  SVGO Optimization: {'✅ Enabled' if ENABLE_SVGO else '⏭️  Disabled (using svgcleaner only)'}")
