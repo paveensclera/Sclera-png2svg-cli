@@ -1,7 +1,8 @@
 import cv2 as cv
 
+RESIZE_LIMIT = 4096
 
-def resize_img_det(img, detections, max_side=4096):
+def resize_img_det(img, detections, max_side=RESIZE_LIMIT):
     h, w = img.shape[:2]
     largest = max(h, w)
     
