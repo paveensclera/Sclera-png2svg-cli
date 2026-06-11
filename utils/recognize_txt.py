@@ -1,5 +1,4 @@
 import os
-
 CPU_THREADS = 4
 if CPU_THREADS:
     os.environ["OMP_NUM_THREADS"] = str(CPU_THREADS)
@@ -12,22 +11,22 @@ import logging
 import re
 import cv2 as cv
 import numpy as np
+import time
 
 from rapidocr import RapidOCR, OCRVersion, EngineType, ModelType, LangDet, LangCls, LangRec
 from rapidocr.utils.log import logger as rapidocr_logger
-
 
 rapidocr_logger.setLevel(logging.ERROR)
 for handler in rapidocr_logger.handlers:
     handler.setLevel(logging.ERROR)
     
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+TILE_SIZE         = 2000   # Default tile window size in pixels
+OVERLAP           = 300    # Overlap between tiles in pixels
+INK_THRESHOLD     = 0.005   # Minimum ratio of ink pixels in a tile to consider it for OCR
 
 # ----------- Parameters -----------
 
@@ -56,15 +55,12 @@ CLUSTER_MARGIN   = 300
 CROP_PADDING     = 50
 
 # GPU toggle (requires onnxruntime-gpu and several cuda dependencies)
-USE_CUDA        = False
+#USE_CUDA        = False
 
 # ----------------------------------
 
 
 def calculate_iou(box1, box2):
-    """
-    Calculates the overlap between 2 bounding boxes of the text, required for filtering out duplicate detections.
-    """
     x_left   = max(box1[0], box2[0])
     y_top    = max(box1[1], box2[1])
     x_right  = min(box1[2], box2[2])
@@ -84,9 +80,6 @@ def calculate_iou(box1, box2):
 
 
 def clean_text(text):
-    """
-    Cleans the recognized text by removing special characters and trimming whitespace.
-    """
     text = "".join(c for c in text if (32 <= ord(c) <= 126) or (ord(c) == 176)).strip()
     
     text = text.replace("$", "S")
@@ -99,9 +92,6 @@ def clean_text(text):
 
 
 def filter_detections(detections):
-    """
-    Filters out detections that are below the confidence score threshold or are duplicates.
-    """
     detections = sorted(detections, key=lambda x: x["score"], reverse=True)
     
     n       = len(detections)
@@ -127,7 +117,6 @@ def filter_detections(detections):
             has_overlap = iou > IOU_THRESHOLD
             is_substring = (t1 in t2 or t2 in t1)
             
-            # if the texts are substrings of each other and they have some overlap, the shorter one is not kept
             if is_substring and iou > 0:
                 if len1 >= len2:
                     keep[j] = False
@@ -135,7 +124,6 @@ def filter_detections(detections):
                     keep[i] = False
                     break
                 
-            # if the texts are not substrings but they have significant overlap, the one with the lower score is not kept
             elif has_overlap:
                 if score1 >= score2:
                     keep[j] = False
@@ -144,12 +132,9 @@ def filter_detections(detections):
                     break
 
     return [d for i, d in enumerate(detections) if keep[i]]
-         
+
 
 def load_image(path):
-    """
-    Loads the image from the given path and returns it along with its width and height.
-    """
     img = cv.imread(path)
     if img is None:
         raise ValueError(f"Could not read image: {path}")
@@ -158,10 +143,6 @@ def load_image(path):
 
 
 def binarize_image(img):
-    """
-    Converts the image to a binary image to improve detections.
-    The coloured darker background is detected and set to white to get a better reading of the text. 
-    """
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     if len(img.shape) == 3 and img.shape[2] == 3:
         hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
@@ -169,25 +150,16 @@ def binarize_image(img):
         is_colored_bg = (s > 8) & (v > 100)
         gray[is_colored_bg] = 255
         
-    # results vary and using THRESH_OTSU gives better results in some floormaps
-    # this could be tweaked for better detections
     _, binary = cv.threshold(gray, 127, 255, cv.THRESH_BINARY_INV) 
     return binary
 
 
 def remove_thin_lines(img, thickness=THIN_LINES_THICKNESS):
-    """
-    Removes thin lines from the floormaps to improve detections.
-    Higher thickness values will remove the thin lines better, but may also remove parts of the text.
-    """
     kernel = np.ones((thickness, thickness), np.uint8)
     return cv.morphologyEx(img, cv.MORPH_OPEN, kernel)
 
 
 def remove_noise(img, min_area=DESPECKLE_AREA):
-    """
-    Remove small speckles of noise left out from binarization and line removal.
-    """
     num_labels, labels, stats, _ = cv.connectedComponentsWithStats(img, connectivity=8)
     areas = stats[:, cv.CC_STAT_AREA]
     
@@ -199,75 +171,75 @@ def remove_noise(img, min_area=DESPECKLE_AREA):
     return cleaned
 
 
-def toggle_ocr_recognition(ocr, det=True, cls=True, rec=True):
-    """
-    Toggles the detection, classification, and recognition components of the OCR engine.
-    """
-    ocr.update_params(
-        use_rec=rec, 
-        use_cls=cls, 
-        use_det=det
-    )
-
-
-def cluster_regions(boxes, max_size=CLUSTER_MAX_SIZE, margin=CLUSTER_MARGIN):
-    """
-    Clusters nearby text regions into larger crops to be passed to the OCR engine for better recognition.
-    """
-    if len(boxes) == 0:
-        return []
+def estimate_optimal_tile_params(binary):
+    h, w = binary.shape
+    
+    scale = 8
+    h_small, w_small = h // scale, w // scale
+    if h_small > 0 and w_small > 0:
+        small_binary = cv.resize(binary, (w_small, h_small), interpolation=cv.INTER_NEAREST)            
+        kernel = np.ones((3, 3), np.uint8)
+        dilated = cv.dilate(small_binary, kernel, iterations=1)
         
-    boxes = np.array(boxes)
-    
-    # precompute the axis-aligned bounding boxes for the text regions
-    x_mins = np.min(boxes[:, :, 0], axis=1)
-    y_mins = np.min(boxes[:, :, 1], axis=1)
-    x_maxs = np.max(boxes[:, :, 0], axis=1)
-    y_maxs = np.max(boxes[:, :, 1], axis=1)
-    
-    aabbs = np.column_stack((x_mins, y_mins, x_maxs, y_maxs))
-    order = np.lexsort((x_mins, y_mins))
-    aabbs = aabbs[order]
-
-    clusters = []
-    
-    for aabb in aabbs:
-        b_xmin, b_ymin, b_xmax, b_ymax = aabb
-        added = False
+        num_labels, _, stats, _ = cv.connectedComponentsWithStats(dilated, connectivity=8)
         
-        for c in clusters:
-            c_xmin, c_ymin, c_xmax, c_ymax = c
+        widths = stats[1:, cv.CC_STAT_WIDTH] * scale
+        heights = stats[1:, cv.CC_STAT_HEIGHT] * scale
+        
+        valid_mask = (heights > 0)
+        widths = widths[valid_mask]
+        heights = heights[valid_mask]
+        
+        aspect = widths / heights
+        
+        valid_text_mask = (
+            (heights >= 8) & (heights <= 120) &
+            (widths >= 8) & (widths <= 2000) &
+            (aspect >= 0.2) & (aspect <= 100.0)
+        )
+        
+        valid_heights = heights[valid_text_mask]
+        
+        if len(valid_heights) > 0:
+            median_height = np.median(valid_heights)
+            print(f"Detected median text height (pre-scan): {median_height:.1f}px")
             
-            # calculate the distance between the boxes
-            dx = max(0, max(b_xmin, c_xmin) - min(b_xmax, c_xmax))
-            dy = max(0, max(b_ymin, c_ymin) - min(b_ymax, c_ymax))
+            if median_height > 70:
+                tile_size = 2000
+                print(f"Large text detected. Choosing tile_size={tile_size}")
+            elif median_height > 50:
+                tile_size = 1500
+                print(f"Medium text detected. Choosing tile_size={tile_size}")
+            else:
+                tile_size = 1000
+                print(f"Small text detected. Choosing tile_size={tile_size}")
             
-            # check if the boxes are within the margin distance to be clustered together
-            if max(dx, dy) <= margin:
-                new_xmin = min(b_xmin, c_xmin)
-                new_ymin = min(b_ymin, c_ymin)
-                new_xmax = max(b_xmax, c_xmax)
-                new_ymax = max(b_ymax, c_ymax)
-                
-                # check if the cluster is within the cluster size limit
-                if (new_xmax - new_xmin) <= max_size and (new_ymax - new_ymin) <= max_size:
-                    c[0], c[1], c[2], c[3] = new_xmin, new_ymin, new_xmax, new_ymax
-                    added = True
-                    break
-                    
-        if not added:
-            clusters.append([b_xmin, b_ymin, b_xmax, b_ymax])
+            return tile_size
             
-    # logger.info(f"Clustered {len(boxes)} text regions into {len(clusters)} large crops.")
-    return clusters
+    print(f"Could not estimate text scale. Falling back to tile_size=2000")
+    return 2000
 
+def recognize_txt(image_path, output_thin=None):
+    """
+    Load the image, pre-process to remove thin lines, then run RapidOCR in
+    overlapping tiles with a rigid grid. Returns (original_img, merged_detections).
+    """
+    img, w, h = load_image(image_path)
+    process_img = binarize_image(img)
+    process_img = remove_thin_lines(process_img, thickness=2)
+    process_img = cv.erode(process_img, np.ones((2, 2), np.uint8), iterations=1)
+    process_img = remove_noise(process_img)
+    
+    tile_size = estimate_optimal_tile_params(process_img)
+    
+    process_img = cv.bitwise_not(process_img)
+    process_img = cv.cvtColor(process_img, cv.COLOR_GRAY2BGR)
+    
+    if output_thin:
+        cv.imwrite(output_thin, process_img)
 
-def process_ocr(img, w, h):
-    """
-    Processes the image using the OCR engine using 2 passes.
-    1st pass: detects text regions and clusters them into larger crops.
-    2nd pass: runs the OCR engine on the clustered crops to get the final text detections.
-    """
+    # Initialise RapidOCR (ONNX Runtime)
+    print(f"Initialising RapidOCR engine (tile_size={tile_size})...")
     side_len = max(w, h)
     ocr = RapidOCR(params={
         "Global.text_score":   SCORE_THRESHOLD,
@@ -293,80 +265,79 @@ def process_ocr(img, w, h):
         "Rec.lang_type":   LangRec.EN,
         
         "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
-        "EngineConfig.onnxruntime.use_cuda":             USE_CUDA,
+        "EngineConfig.onnxruntime.intra_op_num_threads": CPU_THREADS,
+        "EngineConfig.onnxruntime.inter_op_num_threads": 1
     })
     
-    toggle_ocr_recognition(ocr, rec=False)
     
-    coarse_res = ocr(img)
-    if coarse_res is None or not hasattr(coarse_res, "boxes") or coarse_res.boxes is None:
-        logger.info("No text regions detected.")
-        return img, []
-    
-    c_boxes = cluster_regions(coarse_res.boxes)
-    
-    toggle_ocr_recognition(ocr, rec=True)
-    ocr.update_params(unclip_ratio=1.4)
-    
-    final_detections = []
-    for cbox in c_boxes:
-        xmin = max(0, int(cbox[0]) - CROP_PADDING)
-        ymin = max(0, int(cbox[1]) - CROP_PADDING)
-        xmax = min(w, int(cbox[2]) + CROP_PADDING)
-        ymax = min(h, int(cbox[3]) + CROP_PADDING)
-        
-        crop = img[ymin:ymax, xmin:xmax]
-        if crop.shape[0] < 10 or crop.shape[1] < 10:
-            continue
-        
-        res = ocr(crop)
-        if res is None or res.boxes is None or len(res.txts) == 0:
-            continue
-        
-        for box, text, score in zip(res.boxes, res.txts, res.scores):
-            text = clean_text(text)
-            if text == "":
-                continue
-            
-            score = float(score)
-            
-            local_poly = np.array(box, dtype=np.int32)
-            global_poly = local_poly + np.array([xmin, ymin])
-            
-            h1 = np.linalg.norm(global_poly[3] - global_poly[0])
-            h2 = np.linalg.norm(global_poly[2] - global_poly[1])
-            text_h = max(h1, h2)
-            
-            final_detections.append({
-                "box": [
-                    int(np.min(global_poly[:, 0])),
-                    int(np.min(global_poly[:, 1])),
-                    int(np.max(global_poly[:, 0])),
-                    int(np.max(global_poly[:, 1]))
-                ],
-                "poly": global_poly.tolist(),
-                "text": text,
-                "score": score,
-                "font_size": int(text_h)
-            })
-            
-    final_detections = filter_detections(final_detections)
-    # logger.info(f"Total text detections: {len(final_detections)}")
-    
-    return final_detections
+    detections  = []
+    tile_count  = 0
+    skipped_count = 0
+    total_runs = 0
 
-def recognize_txt(img):
-    """
-    Recognizes text from the given PNG image and returns a list of detections with their bounding boxes, recognized text, confidence scores, and font sizes.
-    """
-    h, w = img.shape[:2]
-    process_img = binarize_image(img)
-    process_img = remove_thin_lines(process_img)
-    process_img = cv.erode(process_img, np.ones((2, 2), np.uint8), iterations=1)
-    process_img = remove_noise(process_img)
-    process_img = cv.bitwise_not(process_img)
-    process_img = cv.cvtColor(process_img, cv.COLOR_GRAY2BGR)
+    print(f"Processing tiles ({tile_size}x{tile_size}, {OVERLAP}px overlap)")
+    start_time = time.time()
+
+    y = 0
+    while y < h:
+        ymin, ymax = y, min(y + tile_size, h)
+        x = 0
+        while x < w:
+            xmin, xmax = x, min(x + tile_size, w)
+            total_runs += 1
+
+            tile_bin = process_img[ymin:ymax, xmin:xmax]
+            tile_bin_gray = cv.cvtColor(tile_bin, cv.COLOR_BGR2GRAY)
+            total = tile_bin_gray.shape[0] * tile_bin_gray.shape[1]
+            
+            ink_pixels = total - cv.countNonZero(tile_bin_gray)
+            if total == 0 or (ink_pixels / float(total)) <= INK_THRESHOLD:
+                x += tile_size - OVERLAP
+                skipped_count += 1
+                continue
+
+            tile = process_img[ymin:ymax, xmin:xmax]
+            res = ocr(tile)
+            tile_count += 1
+
+            if res and res.boxes is not None and len(res.txts) > 0:
+                for i in range(len(res.txts)):
+                    text  = clean_text(res.txts[i])
+                    if not text:
+                        continue
+                    if len(text) == 1:
+                        continue
+                    
+                    score = float(res.scores[i])
+                    poly  = np.array(res.boxes[i])
+
+                    # Shift back to global coordinates
+                    global_poly = poly.copy()
+                    global_poly[:, 0] += xmin
+                    global_poly[:, 1] += ymin
+                    
+                    h1 = np.linalg.norm(global_poly[3] - global_poly[0])
+                    h2 = np.linalg.norm(global_poly[2] - global_poly[1])
+                    detected_font_size = max(h1, h2)
+                    
+                    detections.append({
+                        "box":  [int(np.min(global_poly[:, 0])), int(np.min(global_poly[:, 1])),
+                                 int(np.max(global_poly[:, 0])), int(np.max(global_poly[:, 1]))],
+                        "poly": global_poly.tolist(),
+                        "text": text,
+                        "score": score,
+                        "font_size": int(detected_font_size)
+                    })
+
+            x += tile_size - OVERLAP
+            
+        y += tile_size - OVERLAP
+
+    print(f"Traversed {total_runs} tile positions. Ran OCR on {tile_count} tiles. Jumped past {skipped_count} empty positions.")
     
-    detections = process_ocr(process_img, w, h)
-    
-    return detections
+    print("Merging overlapping detections...")
+    merged = filter_detections(detections)
+    print(f"Detections after merge: {len(merged)}")
+    print(f"Tiled OCR completed in {time.time() - start_time:.2f}s")
+
+    return img, merged
