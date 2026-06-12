@@ -31,13 +31,8 @@ def inject_elements(svg, detections, floor_id, floor_name = None, floor_location
             poly = np.array(det["poly"], dtype=np.float64)
             cx, cy = np.mean(poly, axis=0)
             
-            edge_top    = np.linalg.norm(poly[1] - poly[0])
-            edge_right  = np.linalg.norm(poly[2] - poly[1])
-            edge_bottom = np.linalg.norm(poly[3] - poly[2])
-            edge_left   = np.linalg.norm(poly[0] - poly[3])
-            
-            avg_horiz = (edge_top + edge_bottom) / 2.0
-            avg_vert  = (edge_left + edge_right) / 2.0
+            avg_horiz = (np.linalg.norm(poly[1] - poly[0]) + np.linalg.norm(poly[3] - poly[2])) / 2.0
+            avg_vert = (np.linalg.norm(poly[0] - poly[3]) + np.linalg.norm(poly[2] - poly[1])) / 2.0
             
             if avg_horiz >= avg_vert:
                 dx, dy = poly[1][0] - poly[0][0], poly[1][1] - poly[0][1]
@@ -47,8 +42,10 @@ def inject_elements(svg, detections, floor_id, floor_name = None, floor_location
             angle_deg = np.degrees(np.arctan2(dy, dx))
         
             attrs = {
-                "x": f"{cx:.1f}", "y": f"{cy:.1f}",
-                "font-size": f"{font_size - 4}px", "fill": "red",
+                "x": f"{cx:.1f}", 
+                "y": f"{cy:.1f}",
+                "font-size": f"{font_size - 4}px", 
+                "fill": "black",
                 "text-anchor": "middle", "dominant-baseline": "central",
                 "font-family": "JetBrainsMono Nerd Font",
             }
