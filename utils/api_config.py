@@ -9,13 +9,21 @@ class Data:
         self.base_url = os.getenv("BASE_URL")
 
     def get_floor(self, floor_id):
+        if not self.base_url:
+            return None
         url = f"{self.base_url}/floor/name/{floor_id}"
-
-        response = requests.get(url)
-        return response.text
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            print(f"Error fetching floor name for floor {floor_id}: {e}")
+            return None
         
 
     def get_locations(self, floor_id):
+        if not self.base_url:
+            return None
         url = f"{self.base_url}/location/{floor_id}"
 
         try:
@@ -38,12 +46,14 @@ class Data:
 
             return formatted if formatted else None
         
-        except requests.exceptions.RequestException as e:
+        except (requests.exceptions.RequestException, ValueError) as e:
             print(f"Error fetching locations for floor {floor_id}: {e}")
             return None
 
 
     def get_paths(self, floor_id):
+        if not self.base_url:
+            return None
         url = f"{self.base_url}/path/{floor_id}"
 
         try:
@@ -56,12 +66,12 @@ class Data:
             return None
 
 
-    def upload_floor(self, floor_id, svg_bytes):
-        url = f"{self.base_url}/upload"
+    # def upload_floor(self, floor_id, svg_bytes):
+    #     url = f"{self.base_url}/upload"
 
-        files = {
-            "file": (floor_id, svg_bytes, "image/svg+xml")
-        }
-        response = requests.post(url, files=files)
-        response.raise_for_status()
-        return response.text
+    #     files = {
+    #         "file": (floor_id, svg_bytes, "image/svg+xml")
+    #     }
+    #     response = requests.post(url, files=files)
+    #     response.raise_for_status()
+    #     return response.text

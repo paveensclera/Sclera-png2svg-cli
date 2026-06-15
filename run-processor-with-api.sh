@@ -4,14 +4,15 @@
 # Configuration
 PNG_INPUT_DIR="/home/sclera/images/png_floors"
 SVG_OUTPUT_DIR="/home/sclera/images/svg_floors"
-IMAGE_NAME="migration"
+IMAGE_NAME="png-processor:latest"
 
 # API Endpoint Configuration
 # You can override this by setting API_ENDPOINT environment variable before running
-API_ENDPOINT="${API_ENDPOINT:-https://localhost:8092/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-http://localhost:8092/api/v1/migration/convert}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
 export ENABLE_SVGO=false
+export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 
 echo "================================================================================"
 echo "PNG to SVG Processing - API-Filtered Mode"
@@ -19,6 +20,7 @@ echo "==========================================================================
 echo "Input directory:  $PNG_INPUT_DIR"
 echo "Output directory: $SVG_OUTPUT_DIR"
 echo "API Endpoint:     $API_ENDPOINT"
+echo "Conversion engine: $CONVERSION_ENGINE"
 echo "================================================================================"
 echo ""
 
@@ -61,8 +63,9 @@ docker run --rm \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
     --add-host=host.docker.internal:host-gateway \
-    -e BASE_URL=http://host.docker.internal:8092/api/v1/migration \
-    "$IMAGE_NAME"
+    -e BASE_URL=http://localhost:8092/api/v1/migration \
+    -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+    "$IMAGE_NAME" "$@"
 
 # Check results
 if [ $? -eq 0 ]; then

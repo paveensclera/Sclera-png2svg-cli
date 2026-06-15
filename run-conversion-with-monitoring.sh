@@ -10,6 +10,8 @@ SVG_OUTPUT_DIR="${SVG_OUTPUT_DIR:-/home/sclera/images/svg_floors}"
 IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
 API_ENDPOINT="${API_ENDPOINT:-http://localhost:8092/api/v1/migration/convert}"
 ENABLE_SVGO="${ENABLE_SVGO:-false}"
+CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
+
 
 # Monitoring configuration
 MONITOR_INTERVAL=1  # seconds
@@ -50,6 +52,7 @@ print_header() {
         echo -e "Mode:             ${YELLOW}Process all files${NC}"
     fi
     echo -e "SVGO Optimization: ${CYAN}$ENABLE_SVGO${NC}"
+    echo -e "Conversion engine: ${CYAN}$CONVERSION_ENGINE${NC}"
     echo -e "${BLUE}================================================================================${NC}"
     echo ""
 }
@@ -363,7 +366,11 @@ main() {
         -e ENABLE_SVGO="$ENABLE_SVGO" \
         -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
         -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
-        "$IMAGE_NAME" > /dev/null
+        -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
+        --add-host=host.docker.internal:host-gateway \
+        -e BASE_URL=http://localhost:8092/api/v1/migration \
+        -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+        "$IMAGE_NAME" "$@" > /dev/null
     
     echo -e "${GREEN}✅ Container started: $CONTAINER_NAME${NC}"
     echo -e "${YELLOW}📊 Monitoring resources in real-time...${NC}"

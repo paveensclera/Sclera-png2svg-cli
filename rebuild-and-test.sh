@@ -16,7 +16,7 @@ if [ $? -eq 0 ]; then
     
     # Test the policy is correctly applied
     echo "🔍 Testing ImageMagick policy configuration..."
-    docker run --rm png-processor:latest bash -c "
+    docker run --rm --entrypoint bash png-processor:latest -c "
         echo 'ImageMagick version:'
         convert -version | head -3
         echo ''
