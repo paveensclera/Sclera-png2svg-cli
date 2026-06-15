@@ -1,26 +1,229 @@
 import json
 import math
 import xml.etree.ElementTree as ET
+import base64
+import uuid
+from datetime import datetime
 
 SVG_NS = "http://www.w3.org/2000/svg"
+ET.register_namespace('sclera', 'https://sclera.app/ns')
 
 class PathInjector:
     '''
     function to add floor name and id into the <svg> tag of each floor image
     '''
     def write_into_svg_tag(self, root, id, name):
-        # print([thing for thing in root.attrib.values()])
-        
         # required attributes in the <svg> tag
         root.set("data-floor-id", str(id))
         root.set("data-floor-name", str(name))
+        root.set("data-sclera", "1")
 
-        # ? lat long values in the db were added for svg and didn't exist in cold version
-            # if ne_lat and ne_long and sw_lat and sw_long:
-            #     root.set("data-ne-lat", ne_lat)
-            #     root.set("data-ne-long", ne_long)
-            #     root.set("data-sw-lat", sw_lat)
-            #     root.set("data-sw-long", sw_long)
+    def inject_sclera_data(self, root, floor_svg_text, floor_locations, paths_string):
+        viewbox = root.attrib.get("viewBox")
+        if viewbox:
+            parts = viewbox.split()
+            if len(parts) == 4:
+                width = float(parts[2])
+                height = float(parts[3])
+            else:
+                width = float(root.attrib.get("width", 2000))
+                height = float(root.attrib.get("height", 2000))
+        else:
+            width = float(root.attrib.get("width", 2000))
+            height = float(root.attrib.get("height", 2000))
+
+        edit_shapes = []
+        locations = []
+        created_at_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        if floor_locations is not None:
+            sorted_locations = sorted(
+                floor_locations,
+                key=lambda loc: loc.get("zindex", 0)
+            )
+
+            for location in sorted_locations:
+                try:
+                    name = location.get("name", "Unnamed Location")
+                    area_json = location.get("area")
+                    is_removed = location.get("isRemoved", False)
+                    location_id = location.get("id")
+
+                    if is_removed or not area_json:
+                        continue
+
+                    if location_id:
+                        locations.append({
+                            "id": str(location_id),
+                            "name": str(name)
+                        })
+
+                    try:
+                        area_data = json.loads(area_json)
+                    except (ValueError, TypeError):
+                        continue
+
+                    shape = area_data.get("shape", "").lower()
+                    if not shape:
+                        continue
+
+                    shape_id = str(location_id) if location_id else str(uuid.uuid4())
+
+                    if shape == "rectangle":
+                        top_left = area_data["relativeBounds"][0]
+                        bottom_right = area_data["relativeBounds"][1]
+
+                        x1 = top_left["relativeLeft"] * width
+                        y1 = top_left["relativeTop"] * height
+                        x2 = bottom_right["relativeLeft"] * width
+                        y2 = bottom_right["relativeTop"] * height
+
+                        edit_shapes.append({
+                            "id": shape_id,
+                            "type": "rect",
+                            "location": str(location_id) if location_id else "",
+                            "createdAt": created_at_iso,
+                            "connections": [],
+                            "x1": x1,
+                            "y1": y1,
+                            "x2": x2,
+                            "y2": y2,
+                            "color": "rgba(50,90,180,0.9)",
+                            "fill": "rgba(100,149,237,0.35)",
+                            "strokeWidth": 2,
+                            "style": {
+                                "strokeColor": "rgba(50,90,180,0.9)",
+                                "fillColor": "rgba(100,149,237,0.35)",
+                                "strokeWidth": 2
+                            }
+                        })
+
+                    elif shape == "circle":
+                        center = {
+                            "x": area_data["relativeCenter"]["relativeLeft"] * width,
+                            "y": area_data["relativeCenter"]["relativeTop"] * height,
+                        }
+                        radius = area_data["relativeRadius"] * min(width, height)
+
+                        edit_shapes.append({
+                            "id": shape_id,
+                            "type": "circle",
+                            "location": str(location_id) if location_id else "",
+                            "createdAt": created_at_iso,
+                            "connections": [],
+                            "cx": center["x"],
+                            "cy": center["y"],
+                            "r": radius,
+                            "color": "rgba(50,90,180,0.9)",
+                            "fill": "rgba(100,149,237,0.35)",
+                            "strokeWidth": 2,
+                            "style": {
+                                "strokeColor": "rgba(50,90,180,0.9)",
+                                "fillColor": "rgba(100,149,237,0.35)",
+                                "strokeWidth": 2
+                            }
+                        })
+
+                    else:  # Polygon
+                        points = [
+                            {
+                                "x": bound["relativeLeft"] * width,
+                                "y": bound["relativeTop"] * height
+                            }
+                            for bound in area_data["relativeBounds"]
+                        ]
+
+                        edit_shapes.append({
+                            "id": shape_id,
+                            "type": "polygon",
+                            "location": str(location_id) if location_id else "",
+                            "createdAt": created_at_iso,
+                            "connections": [],
+                            "points": points,
+                            "color": "rgba(50,90,180,0.9)",
+                            "fill": "rgba(100,149,237,0.35)",
+                            "strokeWidth": 2,
+                            "style": {
+                                "strokeColor": "rgba(50,90,180,0.9)",
+                                "fillColor": "rgba(100,149,237,0.35)",
+                                "strokeWidth": 2
+                            }
+                        })
+
+                except Exception as e:
+                    print(f"Error packing area in editShapes: {e}")
+
+        if paths_string:
+            try:
+                array_of_paths = json.loads(paths_string)
+            except (ValueError, TypeError):
+                array_of_paths = []
+
+            for path_points in array_of_paths:
+                try:
+                    if isinstance(path_points, str):
+                        path_points = json.loads(path_points)
+
+                    points = [
+                        {
+                            "x": point["relativeLeft"] * width,
+                            "y": point["relativeTop"] * height
+                        }
+                        for point in path_points
+                    ]
+
+                    edit_shapes.append({
+                        "id": str(uuid.uuid4()),
+                        "type": "path",
+                        "location": "",
+                        "createdAt": created_at_iso,
+                        "connections": [],
+                        "points": points,
+                        "color": "#3182CE",
+                        "fill": "none",
+                        "strokeWidth": 2,
+                        "style": {
+                            "strokeColor": "#3182CE",
+                            "fillColor": "none",
+                            "strokeWidth": 2
+                        }
+                    })
+                except Exception as e:
+                    print(f"Error packing route in editShapes: {e}")
+
+        state_obj = {
+            "walls": [],
+            "cameras": [],
+            "bleBeacons": [],
+            "bleReceivers": [],
+            "wifiAPs": [],
+            "measNodes": [],
+            "measSegs": [],
+            "measScale": None,
+            "measScaleUnit": "ft",
+            "measVisible": True,
+            "detectedAreas": [],
+            "editShapes": edit_shapes,
+            "bgImage": None,
+            "floorSvgText": floor_svg_text,
+            "transform": {"x": 0, "y": 0, "scale": 1},
+            "defaultCameraType": "bullet",
+            "wallsGlobalLocked": False,
+            "cameraRayVis": True,
+            "beaconWaveVis": True,
+            "wifiWaveVis": True,
+            "doorMarkers": [],
+            "locations": locations,
+            "geoData": None
+        }
+
+        raw = json.dumps(state_obj, ensure_ascii=False)
+        encoded_base64 = base64.b64encode(raw.encode('utf-8')).decode('ascii')
+
+        metadata_el = ET.Element("metadata")
+        data_el = ET.SubElement(metadata_el, "{https://sclera.app/ns}data")
+        data_el.text = encoded_base64
+        root.insert(0, metadata_el)
 
 
     '''
@@ -187,6 +390,9 @@ class PathInjector:
         if array_of_paths is not None:
             for path_points in array_of_paths:
                 try:
+                    if isinstance(path_points, str):
+                        path_points = json.loads(path_points)
+
                     # Convert relative coordinates to absolute coordinates
                     points = [
                         {
