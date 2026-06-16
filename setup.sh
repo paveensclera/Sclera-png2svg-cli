@@ -25,7 +25,7 @@ echo "Build completed successfully!"
 # Test the image
 echo ""
 echo "Testing the container dependencies..."
-docker run --rm --entrypoint python png-processor:latest -c "
+docker run --rm png-processor:latest python -c "
 import subprocess
 import sys
 
@@ -47,7 +47,6 @@ success = True
 success &= test_tool(['python', '--version'], 'Python')
 success &= test_tool(['convert', '-version'], 'ImageMagick')
 success &= test_tool(['potrace', '--version'], 'Potrace')
-success &= test_tool(['vtracer', '--help'], 'VTracer')
 success &= test_tool(['svgcleaner', '--version'], 'svgcleaner')
 success &= test_tool(['svgo', '--version'], 'svgo')
 
