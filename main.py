@@ -3,22 +3,22 @@ import subprocess
 import logging
 import glob
 import traceback
-from cv2 import data
 import requests
 from datetime import time
 from pathlib import Path
 from urllib.parse import urlparse
 import time
-from utils.inject_elements import inject_elements
-from utils.resize_img_det import resize_img_det
 from utils.api_config import Data
 from utils.path_injector import PathInjector
+from utils.ocr import (
+    recognize_txt,
+    remove_txt,
+    inject_elements,
+    resize_img_det,
+    init_ocr_engine
+)
 import xml.etree.ElementTree as ET
-from io import BytesIO
-from utils.remove_txt import remove_txt
-from utils.recognize_txt import recognize_txt
 import cv2 as cv
-import gc 
 # Configure logging
 # NOTE: Enhanced logging configuration for clear terminal output and progress tracking
 logging.basicConfig(
@@ -27,6 +27,8 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+OCR_INSTANCE = init_ocr_engine()
 
 ALL_LOGS_FILE = None
 FAILED_LOGS_FILE = None
@@ -869,7 +871,7 @@ def process_local_files(filter_filenames: list = None):
             # NOTE: Convert PNG to SVG using local processing function
             logger.info(f"   🎯 Starting conversion process...")
             output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
-            img, detections = recognize_txt(str(png_path), output_thin=str(output_thin))
+            img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
             img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
             temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
@@ -1125,7 +1127,7 @@ def process_filtered_files(filter_filenames: list = None):
             # Get the Textless PNG 
             # Convert it to SVG using local processing function
             output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
-            img, detections = recognize_txt(str(png_path), output_thin=str(output_thin))
+            img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
             img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
             temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
