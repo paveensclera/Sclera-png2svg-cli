@@ -8,7 +8,7 @@ set -e
 PNG_INPUT_DIR="${PNG_INPUT_DIR:-/home/sclera/images/png_floors}"
 SVG_OUTPUT_DIR="${SVG_OUTPUT_DIR:-/home/sclera/images/svg_floors}"
 IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
-API_ENDPOINT="${API_ENDPOINT:-http://localhost:8092/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-https://a.vdms245.qagateway.scleravdms.com/map-service/api/v1/migration/convert}"
 ENABLE_SVGO="${ENABLE_SVGO:-false}"
 CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 
@@ -368,7 +368,7 @@ main() {
         -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
         -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
         --add-host=host.docker.internal:host-gateway \
-        -e BASE_URL=http://localhost:8092/api/v1/migration \
+        -e BASE_URL=https://a.vdms245.qagateway.scleravdms.com/map-service/api/v1/migration \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
         "$IMAGE_NAME" "$@" > /dev/null
     
