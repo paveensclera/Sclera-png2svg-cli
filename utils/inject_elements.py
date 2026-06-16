@@ -25,7 +25,7 @@ def inject_elements(svg, detections, floor_id, floor_name = None, floor_location
     
     # inject text elements for detected text regions
     if detections:
-        font_size = np.median([det["font_size"] for det in detections]) if detections else 25
+        font_size = (np.median([det["font_size"] for det in detections]) if detections else 25) - 5
         
         for det in detections:
             poly = np.array(det["poly"], dtype=np.float64)
@@ -44,10 +44,10 @@ def inject_elements(svg, detections, floor_id, floor_name = None, floor_location
             attrs = {
                 "x": f"{cx:.1f}", 
                 "y": f"{cy:.1f}",
-                "font-size": f"{font_size - 4}px", 
+                "font-size": f"{font_size}px", 
                 "fill": "black",
                 "text-anchor": "middle", "dominant-baseline": "central",
-                "font-family": "JetBrainsMono Nerd Font",
+                "font-family": "Arial, Helvetica, sans-serif",
             }
             
             if abs(angle_deg) > 10.0:
@@ -57,3 +57,4 @@ def inject_elements(svg, detections, floor_id, floor_name = None, floor_location
             text_el.text = det["text"]
             
     return ET.ElementTree(root)
+

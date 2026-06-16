@@ -234,7 +234,6 @@ def recognize_txt(image_path, output_thin=None):
     
     detections = []
     tile_count = skipped_count = total_runs = 0
-    start_time = time.time()
 
     y = 0
     while y < h:
