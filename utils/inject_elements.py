@@ -1,7 +1,7 @@
 import numpy as np
 import xml.etree.ElementTree as ET
 
-def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None):
+def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None):
     """
     Injects text elements into an SVG file based on detected text regions.
     """
@@ -20,10 +20,10 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
     
     # inject floor metadata
     if injector:
-        injector.write_into_svg_tag(root, floor_id, floor_name)
+        injector.write_into_svg_tag(root, floor_id, floor_name, geo_data)
         injector.write_location_path_tags(root, floor_locations)
         injector.write_path_path_tags(root, paths)
-        injector.inject_sclera_data(root, raw_svg_content, floor_locations, paths)
+        injector.inject_sclera_data(root, raw_svg_content, floor_locations, paths, geo_data)
     
     # inject text elements for detected text regions
     if detections:
