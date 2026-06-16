@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policymap [
+<!ELEMENT policymap (policy)*>
+<!ATTLIST policymap xmlns CDATA #FIXED ''>
+<!ELEMENT policy EMPTY>
+<!ATTLIST policy xmlns CDATA #FIXED '' domain NMTOKEN #REQUIRED
+  name NMTOKEN #IMPLIED pattern CDATA #IMPLIED rights NMTOKEN #IMPLIED
+  stealth NMTOKEN #IMPLIED value CDATA #IMPLIED>
+]>
+<!--
+  Configure ImageMagick policies for PNG to SVG conversion.
+  
+  This policy file increases memory limits to handle large PNG files
+  that were causing "cache resources exhausted" errors.
+-->
+<policymap>
+  <!-- Set memory limit to 8GiB (increased from default 256MiB) -->
+  <policy domain="resource" name="memory" value="8GiB"/>
+  
+  <!-- Set map limit to 8GiB (increased from default 512MiB) -->
+  <policy domain="resource" name="map" value="8GiB"/>
+  
+  <!-- Set area limit to 256MP (increased from default 16KP) -->
+  <policy domain="resource" name="area" value="256MP"/>
+  
+  <!-- Set disk limit to 8GiB (increased from default 1GiB) -->
+  <policy domain="resource" name="disk" value="8GiB"/>
+  
+  <!-- Set width limit to 64KP (increased from default 16KP) -->
+  <policy domain="resource" name="width" value="64KP"/>
+  
+  <!-- Set height limit to 64KP (increased from default 16KP) -->
+  <policy domain="resource" name="height" value="64KP"/>
+  
+  <!-- Set file limit to 768 (increased from default 768) -->
+  <policy domain="resource" name="file" value="768"/>
+  
+  <!-- Set thread limit to 4 (reasonable for container) -->
+  <policy domain="resource" name="thread" value="4"/>
+  
+  <!-- Set throttle limit to 0 (no throttling) -->
+  <policy domain="resource" name="throttle" value="0"/>
+  
+  <!-- Set time limit to 3600 seconds (1 hour max per operation) -->
+  <policy domain="resource" name="time" value="3600"/>
+  
+  <!-- Allow PNG format -->
+  <policy domain="coder" rights="read|write" pattern="PNG"/>
+  
+  <!-- Allow PBM format (needed for potrace conversion) -->
+  <policy domain="coder" rights="read|write" pattern="PBM"/>
+  
+  <!-- Allow temporary file creation -->
+  <policy domain="path" rights="read|write" pattern="/tmp/*"/>
+  <policy domain="path" rights="read|write" pattern="/home/sclera/images/*"/>
+</policymap>
