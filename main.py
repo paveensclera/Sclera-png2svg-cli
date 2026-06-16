@@ -893,14 +893,17 @@ def process_local_files(filter_filenames: list = None):
             floor_name = data.get_floor(floor_id)
             paths_string = data.get_paths(floor_id)
             floor_locations = data.get_locations(floor_id)
+            geo_data = data.get_geo_data(floor_id)
             tree = inject_elements(
                 svg=resultant_svg_content,
+                raw_svg_content=resultant_svg_content,
                 detections=detections,
                 floor_id=floor_id,
                 floor_name=floor_name,
                 floor_locations=floor_locations,
                 paths=paths_string,
-                injector=injector
+                injector=injector,
+                geo_data=geo_data
             )
             tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
             processed_count += 1
@@ -1146,14 +1149,17 @@ def process_filtered_files(filter_filenames: list = None):
             floor_name = data.get_floor(floor_id)
             paths_string = data.get_paths(floor_id)
             floor_locations = data.get_locations(floor_id)
+            geo_data = data.get_geo_data(floor_id)
             tree = inject_elements(
                 svg=resultant_svg_content,
+                raw_svg_content=resultant_svg_content,
                 detections=detections,
                 floor_id=floor_id,
                 floor_name=floor_name,
                 floor_locations=floor_locations,
                 paths=paths_string,
-                injector=injector
+                injector=injector,
+                geo_data=geo_data
             )
 
             tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
