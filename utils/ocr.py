@@ -422,7 +422,7 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
                 "x": f"{cx:.1f}", 
                 "y": f"{cy:.1f}",
                 "font-size": f"{font_size}px", 
-                "fill": "red",
+                "fill": "black",
                 "text-anchor": "middle", "dominant-baseline": "central",
                 "font-family": "Arial, Helvetica, sans-serif",
             }

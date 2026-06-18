@@ -52,6 +52,13 @@ echo ""
 
 # Run the processing container
 docker run --rm \
+    --cpu-shares 128 \
+    --cpus "4.0" \
+    --blkio-weight 100 \
+    --memory-reservation "512m" \
+    --oom-score-adj 1000 \
+    --memory "4g" \
+    --shm-size 1g \
     --name "png-processor-$(date +%s)" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \

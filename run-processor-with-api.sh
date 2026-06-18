@@ -8,7 +8,7 @@ IMAGE_NAME="png-processor:latest"
 
 # API Endpoint Configuration
 # You can override this by setting API_ENDPOINT environment variable before running
-API_ENDPOINT="${API_ENDPOINT:-https://a.vdms245.qagateway.scleravdms.com/map-service/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-http://localhost:8092/api/v1/migration/convert}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
 export ENABLE_SVGO=false
@@ -56,6 +56,13 @@ echo ""
 
 # Run the processing container with API_ENDPOINT environment variable
 docker run --rm \
+    --cpu-shares 128 \
+    --cpus "4.0" \
+    --blkio-weight 100 \
+    --memory-reservation "512m" \
+    --oom-score-adj 1000 \
+    --memory "4g" \
+    --shm-size 1g \
     --name "png-processor-api-$(date +%s)" \
     -e API_ENDPOINT="$API_ENDPOINT" \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
@@ -63,7 +70,7 @@ docker run --rm \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
     --add-host=host.docker.internal:host-gateway \
-    -e BASE_URL=https://a.vdms245.qagateway.scleravdms.com/map-service/api/v1/migration \
+    -e BASE_URL=http://localhost:8092/api/v1/migration \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
     "$IMAGE_NAME" "$@"
 

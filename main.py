@@ -536,9 +536,7 @@ def check_dependencies():
         "svgcleaner": ["svgcleaner", "--version"],
     }
     
-    if CONVERSION_ENGINE == "vtracer":
-        tools["VTracer"] = ["vtracer", "--help"]
-    else:
+    if CONVERSION_ENGINE == "potrace":
         tools["Potrace"] = ["potrace", "--version"]
     
     # Add SVGO to checks only if it's enabled

@@ -8,7 +8,7 @@ set -e
 PNG_INPUT_DIR="${PNG_INPUT_DIR:-/home/sclera/images/png_floors}"
 SVG_OUTPUT_DIR="${SVG_OUTPUT_DIR:-/home/sclera/images/svg_floors}"
 IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
-API_ENDPOINT="${API_ENDPOINT:-https://a.vdms245.qagateway.scleravdms.com/map-service/api/v1/migration/convert}"
+API_ENDPOINT="${API_ENDPOINT:-http://localhost:8092/api/v1/migration/convert}"
 ENABLE_SVGO="${ENABLE_SVGO:-false}"
 CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 
@@ -149,44 +149,66 @@ show_system_resources() {
 }
 
 # Monitor container resources silently (collect data only)
+# Convert a raw docker stats value (e.g. "1.22MB", "450B", "2.1GB") to MB
+to_mb() {
+    local val=$(echo "$1" | sed 's/[^0-9.]//g')
+    local unit=$(echo "$1" | sed 's/[0-9.]//g' | tr '[:lower:]' '[:upper:]')
+    
+    if [[ -z "$val" ]]; then
+        echo "0.00"
+        return
+    fi
+    
+    case "$unit" in
+        *GB*|*G*)
+            echo "$val" | awk '{printf "%.2f", $1 * 1024}'
+            ;;
+        *MB*|*M*)
+            echo "$val" | awk '{printf "%.2f", $1}'
+            ;;
+        *KB*|*K*)
+            echo "$val" | awk '{printf "%.2f", $1 / 1024}'
+            ;;
+        *)
+            # Bytes
+            echo "$val" | awk '{printf "%.2f", $1 / 1024 / 1024}'
+            ;;
+    esac
+}
+
+# Monitor container resources silently (collect data only)
 monitor_container() {
     local container_id="$1"
     
     # Initialize stats file
-    echo "timestamp,cpu_percent,memory_gb" > "$STATS_FILE"
+    echo "timestamp,cpu_percent,memory_mb,block_read_mb,block_write_mb,net_in_mb,net_out_mb" > "$STATS_FILE"
     
     while docker ps --filter "id=$container_id" --format "{{.ID}}" | grep -q "$container_id"; do
         # Get Docker stats
-        local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B")
+        local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}},{{.NetIO}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B,0B / 0B,0B / 0B")
         
-        # Parse CPU percentage
-        local cpu_raw=$(echo "$stats" | cut -d',' -f1)
-        local cpu_percent=$(echo "$cpu_raw" | sed 's/%//')
+        # Split fields
+        local cpu_raw=$(echo "$stats" | cut -d',' -f1 | sed 's/%//')
+        local mem_raw=$(echo "$stats" | cut -d',' -f2 | cut -d'/' -f1 | xargs)
+        local block_raw=$(echo "$stats" | cut -d',' -f3)
+        local net_raw=$(echo "$stats" | cut -d',' -f4)
         
-        # Parse memory usage
-        local mem_raw=$(echo "$stats" | cut -d',' -f2 | awk '{print $1}')
-        local mem_unit=$(echo "$mem_raw" | sed 's/[0-9.]//g')
-        local mem_value=$(echo "$mem_raw" | sed 's/[^0-9.]//g')
+        # Parse Block I/O
+        local block_read_raw=$(echo "$block_raw" | cut -d'/' -f1 | xargs)
+        local block_write_raw=$(echo "$block_raw" | cut -d'/' -f2 | xargs)
         
-        # Convert to GB
-        local mem_gb=0
-        case "$mem_unit" in
-            GiB|GB|G)
-                mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1}')
-                ;;
-            MiB|MB|M)
-                mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024}')
-                ;;
-            KiB|KB|K)
-                mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024/1024}')
-                ;;
-            *)
-                mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024/1024/1024}')
-                ;;
-        esac
+        # Parse Network I/O
+        local net_in_raw=$(echo "$net_raw" | cut -d'/' -f1 | xargs)
+        local net_out_raw=$(echo "$net_raw" | cut -d'/' -f2 | xargs)
+        
+        local mem_mb=$(to_mb "$mem_raw")
+        local block_read_mb=$(to_mb "$block_read_raw")
+        local block_write_mb=$(to_mb "$block_write_raw")
+        local net_in_mb=$(to_mb "$net_in_raw")
+        local net_out_mb=$(to_mb "$net_out_raw")
         
         # Save to file with current timestamp
-        echo "$(date +%s),$cpu_percent,$mem_gb" >> "$STATS_FILE"
+        echo "$(date +%s),$cpu_raw,$mem_mb,$block_read_mb,$block_write_mb,$net_in_mb,$net_out_mb" >> "$STATS_FILE"
         
         sleep $MONITOR_INTERVAL
     done
@@ -197,35 +219,21 @@ get_current_resources() {
     local container_id="$1"
     
     # Get Docker stats
-    local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B")
+    local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B,0B / 0B")
     
-    # Parse CPU percentage
-    local cpu_raw=$(echo "$stats" | cut -d',' -f1)
-    local cpu_percent=$(echo "$cpu_raw" | sed 's/%//')
+    # Split fields
+    local cpu_raw=$(echo "$stats" | cut -d',' -f1 | sed 's/%//')
+    local mem_raw=$(echo "$stats" | cut -d',' -f2 | cut -d'/' -f1 | xargs)
+    local block_raw=$(echo "$stats" | cut -d',' -f3)
     
-    # Parse memory usage
-    local mem_raw=$(echo "$stats" | cut -d',' -f2 | awk '{print $1}')
-    local mem_unit=$(echo "$mem_raw" | sed 's/[0-9.]//g')
-    local mem_value=$(echo "$mem_raw" | sed 's/[^0-9.]//g')
+    local block_read_raw=$(echo "$block_raw" | cut -d'/' -f1 | xargs)
+    local block_write_raw=$(echo "$block_raw" | cut -d'/' -f2 | xargs)
     
-    # Convert to GB
-    local mem_gb=0
-    case "$mem_unit" in
-        GiB|GB|G)
-            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1}')
-            ;;
-        MiB|MB|M)
-            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024}')
-            ;;
-        KiB|KB|K)
-            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024/1024}')
-            ;;
-        *)
-            mem_gb=$(echo "$mem_value" | awk '{printf "%.3f", $1/1024/1024/1024}')
-            ;;
-    esac
+    local mem_mb=$(to_mb "$mem_raw")
+    local block_read_mb=$(to_mb "$block_read_raw")
+    local block_write_mb=$(to_mb "$block_write_raw")
     
-    echo "${cpu_percent},${mem_gb}"
+    echo "${cpu_raw},${mem_mb},${block_read_mb},${block_write_mb}"
 }
 
 # Calculate and display resource summary
@@ -250,6 +258,11 @@ show_resource_summary() {
         if($3>mem_max) mem_max=$3;
         if(mem_min=="" || $3<mem_min) mem_min=$3;
         
+        if($4>block_read_max) block_read_max=$4;
+        if($5>block_write_max) block_write_max=$5;
+        if($6>net_in_max) net_in_max=$6;
+        if($7>net_out_max) net_out_max=$7;
+        
         if(NR==2) start_time=$1;
         end_time=$1;
     }
@@ -258,7 +271,12 @@ show_resource_summary() {
             cpu_avg=cpu_sum/cpu_count;
             mem_avg=mem_sum/mem_count;
             duration=end_time-start_time;
-            printf "%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.0f", cpu_avg, cpu_max, cpu_min, mem_avg, mem_max, mem_min, duration;
+            printf "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f", 
+                cpu_avg, cpu_max, cpu_min, 
+                mem_avg, mem_max, mem_min, 
+                block_read_max, block_write_max, 
+                net_in_max, net_out_max, 
+                duration;
         }
     }' "$STATS_FILE")
     
@@ -272,7 +290,11 @@ show_resource_summary() {
     local mem_avg=$(echo "$stats" | cut -d',' -f4)
     local mem_max=$(echo "$stats" | cut -d',' -f5)
     local mem_min=$(echo "$stats" | cut -d',' -f6)
-    local duration=$(echo "$stats" | cut -d',' -f7)
+    local block_read=$(echo "$stats" | cut -d',' -f7)
+    local block_write=$(echo "$stats" | cut -d',' -f8)
+    local net_in=$(echo "$stats" | cut -d',' -f9)
+    local net_out=$(echo "$stats" | cut -d',' -f10)
+    local duration=$(echo "$stats" | cut -d',' -f11)
     
     # Display duration
     echo -e "${BOLD}⏱️  Duration: ${CYAN}${duration}${NC} seconds"
@@ -297,18 +319,32 @@ show_resource_summary() {
     
     # Display memory stats
     echo -e "${BOLD}🧠 Memory Usage:${NC}"
-    echo -e "   Average: ${CYAN}${mem_avg} GB${NC}"
-    echo -e "   Maximum: ${CYAN}${mem_max} GB${NC}"
-    echo -e "   Minimum: ${CYAN}${mem_min} GB${NC}"
+    echo -e "   Average: ${CYAN}${mem_avg} MB${NC}"
+    echo -e "   Maximum: ${CYAN}${mem_max} MB${NC}"
+    echo -e "   Minimum: ${CYAN}${mem_min} MB${NC}"
     
-    # Memory impact assessment
-    if (( $(echo "$mem_avg > 2.0" | bc -l 2>/dev/null || echo 0) )); then
+    # Memory impact assessment (mem_avg is in MB)
+    if (( $(echo "$mem_avg > 2048" | bc -l 2>/dev/null || echo 0) )); then
         echo -e "   Impact:  ${RED}🔴 HIGH - Significant memory usage${NC}"
-    elif (( $(echo "$mem_avg > 1.0" | bc -l 2>/dev/null || echo 0) )); then
+    elif (( $(echo "$mem_avg > 1024" | bc -l 2>/dev/null || echo 0) )); then
         echo -e "   Impact:  ${YELLOW}🟡 MODERATE - Noticeable memory usage${NC}"
     else
         echo -e "   Impact:  ${GREEN}🟢 LOW - Minimal memory usage${NC}"
     fi
+    
+    echo ""
+    
+    # Display Disk I/O volume
+    echo -e "${BOLD}💾 Disk I/O Volume:${NC}"
+    echo -e "   Total Read:  ${CYAN}${block_read} MB${NC}"
+    echo -e "   Total Write: ${CYAN}${block_write} MB${NC}"
+    
+    echo ""
+    
+    # Display Network volume
+    echo -e "${BOLD}🌐 Network Volume:${NC}"
+    echo -e "   Total Received: ${CYAN}${net_in} MB${NC}"
+    echo -e "   Total Sent:     ${CYAN}${net_out} MB${NC}"
     
     echo ""
     echo -e "${BLUE}================================================================================${NC}"
@@ -361,6 +397,13 @@ main() {
     
     # Start container in background
     docker run -d --rm \
+        --cpu-shares 128 \
+        --cpus "4.0" \
+        --blkio-weight 100 \
+        --memory-reservation "512m" \
+        --oom-score-adj 1000 \
+        --memory "4g" \
+        --shm-size 1g \
         --name "$CONTAINER_NAME" \
         -e API_ENDPOINT="$API_ENDPOINT" \
         -e ENABLE_SVGO="$ENABLE_SVGO" \
@@ -368,7 +411,7 @@ main() {
         -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
         -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \
         --add-host=host.docker.internal:host-gateway \
-        -e BASE_URL=https://a.vdms245.qagateway.scleravdms.com/map-service/api/v1/migration \
+        -e BASE_URL=http://localhost:8092/api/v1/migration \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
         "$IMAGE_NAME" "$@" > /dev/null
     
@@ -407,9 +450,11 @@ main() {
             local resources=$(get_current_resources "$CONTAINER_ID")
             local cpu=$(echo "$resources" | cut -d',' -f1)
             local mem=$(echo "$resources" | cut -d',' -f2)
+            local read_mb=$(echo "$resources" | cut -d',' -f3)
+            local write_mb=$(echo "$resources" | cut -d',' -f4)
             
             # Display resources after this file
-            echo -e "   ${CYAN}[Resources]${NC} 💻 CPU: ${BOLD}${cpu}%${NC} | 🧠 RAM: ${BOLD}${mem} GB${NC}"
+            echo -e "   ${CYAN}[Resources]${NC} 💻 CPU: ${BOLD}${cpu}%${NC} | 🧠 RAM: ${BOLD}${mem} MB${NC} | 💾 Disk Read: ${BOLD}${read_mb} MB${NC} | 💾 Disk Write: ${BOLD}${write_mb} MB${NC}"
             echo ""
         fi
     done
