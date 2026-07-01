@@ -6,11 +6,35 @@ PNG_INPUT_DIR="/home/sclera/images/png_floors"
 SVG_OUTPUT_DIR="/home/sclera/images/svg_floors"
 IMAGE_NAME="png-processor:latest"
 
-# Optional: Disable SVGO optimization (uncomment to disable)
-export ENABLE_SVGO=false
+# Load environment files if they exist (single source of truth)
+load_env() {
+    local env_file="$1"
+    if [ -f "$env_file" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line//[[:space:]]/}" ]] && continue
+            if [[ "$line" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+                key="${BASH_REMATCH[1]}"
+                val="${BASH_REMATCH[2]}"
+                val="${val#\"}"
+                val="${val%\"}"
+                val="${val#\'}"
+                val="${val%\'}"
+                export "$key"="$val"
+            fi
+        done < "$env_file"
+    fi
+}
+load_env ".env"
+load_env ".env.local"
 
-# Optional: Default conversion engine (override with CONVERSION_ENGINE environment variable)
+# API Endpoint & Base URL Configuration
+export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
+
+# Optional: Disable SVGO optimization (uncomment to disable)
+export ENABLE_SVGO="${ENABLE_SVGO:-false}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
+
 
 echo "PNG to SVG Processing - Isolated Container"
 echo "Input directory: $PNG_INPUT_DIR"
@@ -63,6 +87,7 @@ docker run --rm \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
+    -e BASE_URL="$BASE_URL" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
     "$IMAGE_NAME" "$@"
 
