@@ -32,7 +32,6 @@ class Data:
 
             data = response.json()
 
-            # Return dicts normalized to expected field names
             formatted = [
                 {
                     "name": item.get("name"),
@@ -68,7 +67,6 @@ class Data:
     def get_geo_data(self, floor_id):
         if not self.base_url:
             return None
-        # Strip '/migration' from the end of base_url to get Sclera base API url
         sclera_base_url = self.base_url.replace("/migration", "")
         url = f"{sclera_base_url}/floor/{floor_id}"
         
@@ -83,7 +81,6 @@ class Data:
             
             root = ET.fromstring(response.content)
             
-            # 1. Try to extract geoData from metadata element
             geo_data = None
             metadata = root.find("{http://www.w3.org/2000/svg}metadata")
             if metadata is not None:
@@ -96,7 +93,6 @@ class Data:
                     except Exception as e:
                         print(f"Error parsing metadata geoData: {e}")
             
-            # 2. If not found in metadata, fallback to root svg tag attributes
             if not geo_data:
                 ne_lat = root.attrib.get("data-ne-lat")
                 ne_long = root.attrib.get("data-ne-long")

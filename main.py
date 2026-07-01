@@ -20,12 +20,19 @@ from utils.ocr import (
 import xml.etree.ElementTree as ET
 import cv2 as cv
 # Configure logging
-# NOTE: Enhanced logging configuration for clear terminal output and progress tracking
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%H:%M:%S'
-)
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)  # Capture all logs down to DEBUG
+
+# Clear existing handlers
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# Create StreamHandler for concise console logs (INFO level)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S'))
+root_logger.addHandler(console_handler)
+
 logger = logging.getLogger(__name__)
 
 OCR_INSTANCE = init_ocr_engine()
@@ -56,7 +63,7 @@ def setup_file_logging():
     try:
         file_handler = logging.FileHandler(all_logs_path, mode='a', encoding='utf-8')
         file_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S'))
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(logging.DEBUG)  # Capture detailed debug logs in the file
         root_logger.addHandler(file_handler)
         logger.info(f"Logging all outputs to: {all_logs_path}")
     except Exception as e:
@@ -78,7 +85,6 @@ def write_failed_files_report(failures: list):
         
         write_header = not failed_logs_file.exists() or failed_logs_file.stat().st_size == 0
         
-        # Determine the last index
         last_index = 0
         if not write_header:
             import re
@@ -103,7 +109,6 @@ def write_failed_files_report(failures: list):
                 current_idx = last_index + idx
                 filename = failure['filename']
                 reason = failure['reason']
-                # Escape any pipes in the reason or filename to preserve markdown table structure
                 filename_clean = str(filename).replace("|", "\\|")
                 reason_clean = str(reason).replace("|", "\\|").replace("\n", " ")
                 f.write(f"| {current_idx} | {filename_clean} | {timestamp} | {reason_clean} |\n")
@@ -113,27 +118,20 @@ def write_failed_files_report(failures: list):
         logger.error(f"Failed to write failed files report: {str(e)}")
 
 
-# NOTE: File Storage Configuration
 STORE_PERMANENTLY = os.getenv('STORE_FILES_PERMANENTLY', 'true').lower() == 'true'
 
-# NOTE: SVG Optimization Configuration
-# Set to 'false' to disable SVGO optimization (will still use svgcleaner)
 ENABLE_SVGO = os.getenv('ENABLE_SVGO', 'true').lower() == 'true'
 
-# NOTE: Local file processing directories
 INPUT_DIR = Path(os.getenv("INPUT_DIR", "/home/sclera/images/png_floors"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/home/sclera/images/svg_floors"))
 
-# NOTE: Conversion Engine Configuration (default to potrace)
 CONVERSION_ENGINE = os.getenv('CONVERSION_ENGINE', 'potrace').lower()
 if CONVERSION_ENGINE not in ['potrace', 'vtracer']:
     CONVERSION_ENGINE = 'potrace'
 
-# Create directories for processing
 TEMP_DIR = Path("/tmp/floor_map_processing")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# NOTE: Ensure local processing directories exist
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -172,30 +170,17 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
     Standardize SVG dimensions and add white background for frontend compatibility
     
     NOTE: This function modifies the SVG to match frontend expectations:
-    - Sets consistent dimensions (width='500', height='100%') 
     - Adds overflow='visible' for proper rendering
     - Inserts white background rectangle for consistent appearance
     """
     try:
         
-        logger.info(f"     Standardizing SVG for frontend compatibility...")
-        logger.info(f"     Using direct svg content")
         try:
-            # NOTE: Parse SVG using xml.dom.minidom for manipulation
             from xml.dom import minidom
             dom = minidom.parseString(svg_content)
             svg_element = dom.getElementsByTagName('svg')[0]
-            
-            # NOTE: Set the same dimensions as the frontend code expects    
-            # Removed forced Dimension
-            # Was working for potrace but vtracer has its own dimension handling that can conflict with hardcoded values
-            # svg_element.setAttribute('width', '500')
-            # svg_element.setAttribute('height', '100%')
             svg_element.setAttribute('overflow', 'visible')
             
-            
-            # NOTE: Add white background rectangle to ensure consistent background
-            # This ensures the SVG has an explicit white background regardless of viewer
             rect_element = dom.createElement('rect')
             rect_element.setAttribute('x', '0')
             rect_element.setAttribute('y', '0')
@@ -203,17 +188,14 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
             rect_element.setAttribute('height', '100%')
             rect_element.setAttribute('fill', 'white')
             
-            # NOTE: Insert the background rectangle as the first child of SVG
             if svg_element.firstChild:
                 svg_element.insertBefore(rect_element, svg_element.firstChild)
             else:
                 svg_element.appendChild(rect_element)
             
-            # Serialize back to string
             modified_svg_content = dom.toxml()
             
         except Exception as e:
-            # FIXME: Better error handling for XML parsing failures
             logger.warning(f"     Failed to modify SVG dimensions, using original: {str(e)}")
             modified_svg_content = svg_content
         
@@ -222,7 +204,6 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
             
     except Exception as e:
         logger.error(f"     SVG standardization failed: {str(e)}")
-        # HACK: Return original path if standardization fails completely
         return svg_content
 
 def optimize_svg(svg_content: str) -> str:
@@ -236,12 +217,6 @@ def optimize_svg(svg_content: str) -> str:
     SVGO can be disabled by setting ENABLE_SVGO=false environment variable
     """
     try:
-        # original_size = svg_path.stat().st_size
-        # logger.info(f"     Starting SVG optimization (original size: {original_size} bytes)")
-        
-        # Stage 1: Clean with svgcleaner
-        # NOTE: svgcleaner is excellent at removing unused elements and cleaning SVG structure
-        # cleaned_svg_path = TEMP_DIR / f"{output_filename}_cleaned.svg"
         
         svgcleaner_cmd = [
             "svgcleaner",
@@ -265,7 +240,6 @@ def optimize_svg(svg_content: str) -> str:
             "--remove-unresolved-classes"
         ]
         
-        logger.info("     Running svgcleaner optimization...")
         svgcleaner = subprocess.Popen(svgcleaner_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         cleaned_svg, cleaner_err = svgcleaner.communicate(
             input=svg_content,
@@ -278,32 +252,23 @@ def optimize_svg(svg_content: str) -> str:
             )
             cleaned_svg = svg_content
         
-        # Stage 2: Optimize with svgo (if enabled)
-        # NOTE: SVGO can be disabled via ENABLE_SVGO environment variable
-        # optimized_svg_path = TEMP_DIR / f"{output_filename}_optimized.svg"
-        
+     
         if not ENABLE_SVGO:
-            # SVGO optimization is disabled - use svgcleaner result only
-            logger.info("     SVGO optimization disabled (ENABLE_SVGO=false)")
-            logger.info(f"     Using svgcleaner result only")
+            logger.debug("     SVGO optimization disabled (ENABLE_SVGO=false)")
+            logger.debug(f"     Using svgcleaner result only")
             optimized_svg = cleaned_svg
         else:
-            # SVGO optimization is enabled
-            # NOTE: SVGO v3+ configuration approach
-            # Check if custom config file exists, otherwise use inline config
             svgo_config_path = Path(__file__).parent / "svgo.config.js"
             
             if svgo_config_path.exists():
-                # Use external config file for comprehensive control
                 svgo_cmd = [
                     "svgo",
                     "-",
                     "-o", "-",
                     "--config", str(svgo_config_path)
                 ]
-                logger.info("     Running svgo optimization (using svgo.config.js)...")
+                logger.debug("     Running svgo optimization (using svgo.config.js)...")
             else:
-                # Fallback to inline config
                 svgo_cmd = [
                     "svgo",
                     "-",
@@ -311,7 +276,7 @@ def optimize_svg(svg_content: str) -> str:
                     "--multipass",
                     "--config", '{"plugins": [{"name": "preset-default", "params": {"overrides": {"removeViewBox": false}}}]}'
                 ]
-                logger.info("     Running svgo optimization (using inline config)...")
+                logger.debug("     Running svgo optimization (using inline config)...")
             
             result = subprocess.Popen(svgo_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             optimized_svg, svgo_err = result.communicate(
@@ -321,30 +286,24 @@ def optimize_svg(svg_content: str) -> str:
 
             if result.returncode != 0:
                 logger.warning(f"     svgo failed: {svgo_err}")
-                # HACK: If svgo fails, use the svgcleaner result as fallback
                 optimized_svg = cleaned_svg
         
         # Validate the optimized SVG
         if not optimized_svg:
             logger.error("     Optimized SVG is invalid or SVGO set to false, using original")
-            # FIXME: Better validation needed - check if SVG is actually parseable
             optimized_svg = svg_content
         else:
             final_size = len(optimized_svg)
-            logger.info(f"     svgo optimization completed successfully!")
-            logger.info(f"     Final optimization results: {final_size} bytes")
-        
-        # Clean up intermediate files
-       
+            logger.debug(f"     svgo optimization completed successfully!")
+            logger.debug(f"     Final optimization results: {final_size} bytes")
+               
         return optimized_svg
         
     except subprocess.TimeoutExpired:
         logger.error("SVG optimization process timed out")
-        # HACK: Return original file if optimization times out
         return svg_content
     except Exception as e:
         logger.error(f"SVG optimization failed: {str(e)}")
-        # HACK: Return original file if optimization fails completely
         return svg_content
 
 def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
@@ -355,7 +314,6 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     normalized_png = Path("/dev/shm") / f"{temp_filename}_normalized.png"
     
     try:
-        logger.info(f"   Step 1/2: Normalizing PNG using ImageMagick...")
         normalize_cmd = [
             "magick", str(png_path),
             "-depth", "8",
@@ -379,10 +337,6 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             logger.error("   Normalized PNG was not created")
             return False
         
-        logger.info(f"   Normalized PNG size: {normalized_png.stat().st_size} bytes")
-        logger.info(f"   Step 2/2: Converting PNG to SVG using VTracer...")
-        
-        start_time = time.perf_counter()
         vtracer.convert_image_to_svg_py(
             str(normalized_png),
             str(temp_svg_path),
@@ -396,16 +350,13 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             length_threshold=4.0, 
             splice_threshold=45
         )
-        end_time = time.perf_counter()
         
-        logger.info(f"   VTracer execution time: {end_time - start_time:.2f} seconds")
         return True
 
     except Exception as e:
         logger.error(f"   VTracer conversion error: {str(e)}")
         return False
     finally:
-        # Clean up normalized png
         try:
             if normalized_png.exists():
                 normalized_png.unlink()
@@ -419,7 +370,6 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     pbm_path = Path("/dev/shm") / f"{temp_filename}.pbm"
     
     try:
-        logger.info(f"   Step 1/2: Converting PNG to PBM using ImageMagick...")
         imagemagick_cmd = [
             "convert", str(png_path),
             "-threshold", "98%",
@@ -438,23 +388,17 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             logger.error("   PBM file was not created")
             return False
         
-        logger.info(f"   PBM file size: {pbm_path.stat().st_size} bytes")
-        logger.info(f"   Step 2/2: Converting PBM to SVG using Potrace...")
-        
         potrace_cmd = [
             "potrace", str(pbm_path),
             "-s",
             "-o", str(temp_svg_path)
         ]
-        start_time = time.perf_counter()
         result = subprocess.run(
             potrace_cmd,
             capture_output=True,
             text=True,
             timeout=120
         )
-        end_time = time.perf_counter()
-        logger.info(f"   Potrace execution time: {end_time - start_time:.2f} seconds")
         
         if result.returncode != 0:
             logger.error(f"   Potrace conversion failed: {result.stderr}")
@@ -469,7 +413,6 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
         logger.error(f"   Potrace conversion error: {str(e)}")
         return False
     finally:
-        # Clean up pbm file
         try:
             if pbm_path.exists():
                 pbm_path.unlink()
@@ -479,36 +422,33 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
 
 def convert_png_to_svg_local(png_path: Path) -> str:
     """Convert PNG to SVG using either Potrace or VTracer based on configuration"""
-    logger.info(f"CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
-    logger.info(f"   Input:  {png_path}")
+    logger.debug(f"CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
+    logger.debug(f"   Input:  {png_path}")
 
-    # Temporary file output path
     temp_filename = png_path.stem + "_temp"
     temp_svg_path = Path("/dev/shm") / f"{temp_filename}.svg"
 
     try:
-        # Step 1: Run the actual conversion tool to generate the temp SVG
         if CONVERSION_ENGINE == "vtracer":
+            logger.debug(f"   Running VTracer for conversion...")
             success = run_vtracer_conversion(png_path, temp_svg_path)
         else:
+            logger.debug(f"   Running Potrace for conversion...")
             success = run_potrace_conversion(png_path, temp_svg_path)
 
         if not success or not temp_svg_path.exists():
             logger.error(f"   Conversion tool failed to generate SVG for {png_path.name}")
             return None
 
-        # Step 2: Standardize SVG for frontend compatibility
-        logger.info(f"   Standardizing SVG for frontend compatibility...")
+        logger.debug(f"   Standardizing SVG for frontend compatibility...")
         with open(temp_svg_path, "r", encoding="utf-8") as f:
             svg_content = f.read()
 
         standardized_svg_content = standardize_svg_for_frontend(svg_content)
 
-        # Step 3: Optimize the SVG using svgcleaner and svgo
-        logger.info(f"   Optimizing SVG file...")
+        logger.debug(f"   Optimizing SVG file...")
         optimized_svg_content = optimize_svg(standardized_svg_content)
 
-        # Clean up temp SVG file
         try:
             temp_svg_path.unlink(missing_ok=True)
         except Exception as e:
@@ -518,7 +458,6 @@ def convert_png_to_svg_local(png_path: Path) -> str:
 
     except Exception as e:
         logger.error(f"   Conversion pipeline failed for {png_path.name}: {str(e)}")
-        # Cleanup in case of failure
         try:
             temp_svg_path.unlink(missing_ok=True)
         except Exception:
@@ -536,7 +475,6 @@ def check_dependencies():
     if CONVERSION_ENGINE == "potrace":
         tools["Potrace"] = ["potrace", "--version"]
     
-    # Add SVGO to checks only if it's enabled
     if ENABLE_SVGO:
         tools["svgo"] = ["svgo", "--version"]
     
@@ -558,7 +496,6 @@ def check_dependencies():
             logger.error(f"   {tool_name}: Error checking - {str(e)}")
             all_ok = False
     
-    # Show optional tools status
     if not ENABLE_SVGO:
         logger.info(f"   svgo: Disabled (ENABLE_SVGO=false)")
     
@@ -575,10 +512,9 @@ def fetch_floor_urls_from_api(api_endpoint: str) -> list:
         List of floor image URLs, or empty list if request fails
     """
     try:
-        logger.info(f"Fetching floor URLs from API: {api_endpoint}")
         
         response = requests.get(api_endpoint, timeout=30)
-        response.raise_for_status()  # Raise exception for bad status codes
+        response.raise_for_status()  
         
         urls = response.json()
         
@@ -613,11 +549,9 @@ def extract_filenames_from_urls(urls: list) -> list:
     
     for url in urls:
         try:
-            # Parse URL and extract the filename from the path
             parsed_url = urlparse(url)
             path = parsed_url.path
             
-            # Extract filename from the path
             filename = os.path.basename(path)
             
             if filename:
@@ -643,28 +577,22 @@ def validate_file_readability(file_path: Path) -> tuple[bool, str]:
         Tuple of (is_valid, error_message)
     """
     try:
-        # Check if file exists
         if not file_path.exists():
             return False, "File does not exist"
         
-        # Check if it's actually a file (not a directory)
         if not file_path.is_file():
             return False, "Path is not a file"
         
-        # Check if file is readable
         if not os.access(file_path, os.R_OK):
             return False, "File is not readable (permission denied)"
         
-        # Check if file has content
         file_size = file_path.stat().st_size
         if file_size == 0:
             return False, "File is empty (0 bytes)"
         
-        # Check if file is too small to be a valid PNG
         if file_size < 100:
             return False, f"File is too small ({file_size} bytes) to be a valid PNG"
         
-        # Try to read the PNG header to verify it's a valid PNG file
         try:
             with open(file_path, 'rb') as f:
                 header = f.read(8)
@@ -731,7 +659,7 @@ def process_local_files(filter_filenames: list = None):
                           If None, all PNG files in INPUT_DIR will be processed.
     """
     setup_file_logging()
-    print("="*80)  # NOTE: Visual separator for terminal output
+    print("="*80)  
     logger.info(f"STARTING LOCAL FILE PROCESSING")
     logger.info(f"Input directory:  {INPUT_DIR}")
     logger.info(f"Output directory: {OUTPUT_DIR}")
@@ -743,7 +671,6 @@ def process_local_files(filter_filenames: list = None):
     
     failures = []
     
-    # NOTE: Check dependencies first
     if not check_dependencies():
         engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
         deps = f" {engine_name}, and svgcleaner"
@@ -755,31 +682,25 @@ def process_local_files(filter_filenames: list = None):
     
     print("="*80)
     
-    # Track missing files separately
     missing_files = []
     invalid_files = []
     
-    # NOTE: Find all PNG files in input directory
     png_pattern = str(INPUT_DIR / "*.png")
     all_png_files = glob.glob(png_pattern)
     
-    # NOTE: Apply filename filter if provided with validation
     if filter_filenames:
-        # Validate files from API before processing
         validation_results = check_missing_files(filter_filenames, INPUT_DIR)
         
         missing_files = validation_results['missing']
         invalid_files = validation_results['invalid']
         valid_filenames = validation_results['valid']
         
-        # Record missing files in failures list
         for filename in missing_files:
             failures.append({
                 "filename": filename,
                 "reason": "File does not exist in input directory"
             })
             
-        # Record invalid files in failures list
         for filename, reason in invalid_files:
             failures.append({
                 "filename": filename,
@@ -793,21 +714,19 @@ def process_local_files(filter_filenames: list = None):
         logger.info(f"Found {len(all_png_files)} total PNG files in directory")
         logger.info(f"Filtered to {len(png_files)} valid files to process")
         
-        # Report missing files in detail
         if missing_files:
             print()
             logger.warning(f"MISSING FILES REPORT ({len(missing_files)} files):")
-            for i, filename in enumerate(missing_files[:10], 1):  # Show first 10
+            for i, filename in enumerate(missing_files[:10], 1):
                 logger.warning(f"   {i}. {filename}")
             if len(missing_files) > 10:
                 logger.warning(f"   ... and {len(missing_files) - 10} more missing files")
             print()
         
-        # Report invalid files in detail
         if invalid_files:
             print()
             logger.warning(f"INVALID FILES REPORT ({len(invalid_files)} files):")
-            for i, (filename, reason) in enumerate(invalid_files[:10], 1):  # Show first 10
+            for i, (filename, reason) in enumerate(invalid_files[:10], 1): 
                 logger.warning(f"   {i}. {filename} - {reason}")
             if len(invalid_files) > 10:
                 logger.warning(f"   ... and {len(invalid_files) - 10} more invalid files")
@@ -830,7 +749,6 @@ def process_local_files(filter_filenames: list = None):
             write_failed_files_report(failures)
             return False
     
-    # NOTE: Sort files for consistent processing order
     png_files.sort()
     total_files = len(png_files)
     logger.info(f"Processing {total_files} PNG files")
@@ -847,24 +765,18 @@ def process_local_files(filter_filenames: list = None):
         temp_png = None
         try:
             png_path = Path(png_file_path)
-            # NOTE: Generate output SVG path with same filename but .svg extension
             svg_filename = png_path.stem + ".svg"
             output_svg_path = OUTPUT_DIR / svg_filename
             
-            print()  # NOTE: Add spacing between files for readability
-            logger.info(f"PROCESSING FILE {index}/{total_files}")
-            logger.info(f"   File: {png_path.name}")
-            logger.info(f"   Size: {png_path.stat().st_size} bytes")
+            start = time.perf_counter()
+            logger.info(f"[{index}/{total_files}] PROCESSING: {png_path.name}")
             
-            # NOTE: Skip if SVG already exists unless we want to overwrite
             if output_svg_path.exists():
                 skipped_count += 1
-                logger.info(f"   SKIPPED: SVG already exists ({svg_filename})")
-                logger.info(f"   Progress: {index}/{total_files} files checked")
+                logger.info(f"[{index}/{total_files}] SKIPPED: {svg_filename} (SVG already exists)")
                 continue
             
-            # NOTE: Convert PNG to SVG using local processing function
-            logger.info(f"   Starting conversion process...")
+            logger.debug(f"   Starting conversion process...")
             output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
             img, detections = resize_img_det(img, detections)         
@@ -907,13 +819,12 @@ def process_local_files(filter_filenames: list = None):
             
             processed_count += 1
             final_size = os.path.getsize(output_svg_path)
-            logger.info(f"   COMPLETED: {png_path.name} -> {svg_filename} ({final_size} bytes)")
-            logger.info(f"   Progress: {index}/{total_files} files processed ({processed_count} successful)")
+            end = time.perf_counter()
+            logger.info(f"[{index}/{total_files}] COMPLETED: {svg_filename} | Size: {final_size} bytes | Time: {end - start:.2f}s")
                 
         except Exception as e:
             conversion_failed_count += 1
-            logger.error(f"   PROCESSING ERROR: {png_file_path}: {str(e)}")
-            logger.info(f"   Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+            logger.error(f"[{index}/{total_files}] FAILED: {png_path.name} | Error: {str(e)}")
             failures.append({
                 "filename": Path(png_file_path).name,
                 "reason": f"Processing exception: {str(e)}"
@@ -922,12 +833,11 @@ def process_local_files(filter_filenames: list = None):
             if temp_png and temp_png.exists():
                 try:
                     temp_png.unlink()
-                    logger.info(f"   Cleaned up temporary file: {temp_png.name}")
+                    logger.debug(f"   Cleaned up temporary file: {temp_png.name}")
                 except Exception as cleanup_err:
                     logger.warning(f"   Failed to delete temp file {temp_png}: {cleanup_err}")
     overall_end = time.perf_counter()
  
-    # NOTE: Final summary with clear visual separation
     print()
     print("="*80)
     logger.info(f"LOCAL FILE PROCESSING COMPLETED!")
@@ -938,7 +848,6 @@ def process_local_files(filter_filenames: list = None):
             f"   Total processing time: "
             f"{overall_end - overall_start:.2f} seconds"
         )
-    # Show separate counts for different types of failures
     if filter_filenames:
         logger.info(f"   Missing files (not in directory): {len(missing_files)} files")
         logger.info(f"   Invalid files (corrupted/unreadable): {len(invalid_files)} files")
@@ -956,10 +865,8 @@ def process_local_files(filter_filenames: list = None):
     if processed_count > 0:
         logger.info(f"{processed_count} new SVG files created in {OUTPUT_DIR}")
     
-    # Write the failed files report
     write_failed_files_report(failures)
     
-    # Final status assessment
     if total_failures > 0:
         logger.warning(f"Completed with {total_failures} failures")
     
@@ -986,7 +893,7 @@ def process_filtered_files(filter_filenames: list = None):
                          If None, all PNG files in INPUT_DIR will be processed.
     """
     setup_file_logging()
-    print("="*80)  # NOTE: Visual separator for terminal output
+    print("="*80) 
     logger.info(f"STARTING API-DRIVEN FILE PROCESSING")
     logger.info(f"Input directory:  {INPUT_DIR}")
     logger.info(f"Output directory: {OUTPUT_DIR}")
@@ -998,7 +905,6 @@ def process_filtered_files(filter_filenames: list = None):
     
     failures = []
     
-    # NOTE: Check dependencies first
     if not check_dependencies():
         engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
         deps = f" {engine_name}, and svgcleaner"
@@ -1010,47 +916,39 @@ def process_filtered_files(filter_filenames: list = None):
     
     print("="*80)
     
-    # Track missing files separately
     missing_files = []
     invalid_files = []
     
-    # NOTE: Find all PNG files in input directory
     png_pattern = str(INPUT_DIR / "*.png")
     all_png_files = glob.glob(png_pattern)
     data = Data()
     injector = PathInjector()
 
-    # NOTE: Apply filename filter if provided with validation
     if filter_filenames:
-        # Validate files from API before processing
         validation_results = check_missing_files(filter_filenames, INPUT_DIR)
         
         missing_files = validation_results['missing']
         invalid_files = validation_results['invalid']
         valid_filenames = validation_results['valid']
         
-        # Record missing files in failures list
         for filename in missing_files:
             failures.append({
                 "filename": filename,
                 "reason": "File does not exist in input directory"
             })
             
-        # Record invalid files in failures list
         for filename, reason in invalid_files:
             failures.append({
                 "filename": filename,
                 "reason": f"Invalid or unreadable PNG file: {reason}"
             })
         
-        # Create a set for faster lookup
         filter_set = set(filter_filenames)
         png_files = [f for f in all_png_files if os.path.basename(f) in filter_set]
         
         logger.info(f"Found {len(all_png_files)} total PNG files in directory")
         logger.info(f"Filtered to {len(png_files)} valid files to process")
         
-        # Report missing files in detail
         if missing_files:
             print()
             logger.warning(f"MISSING FILES REPORT ({len(missing_files)} files):")
@@ -1060,7 +958,6 @@ def process_filtered_files(filter_filenames: list = None):
                 logger.warning(f"   ... and {len(missing_files) - 10} more missing files")
             print()
         
-        # Report invalid files in detail
         if invalid_files:
             print()
             logger.warning(f"INVALID FILES REPORT ({len(invalid_files)} files):")
@@ -1087,7 +984,6 @@ def process_filtered_files(filter_filenames: list = None):
             write_failed_files_report(failures)
             return False
     
-    # NOTE: Sort files for consistent processing order
     png_files.sort()
     total_files = len(png_files)
     logger.info(f"Processing {total_files} PNG files")
@@ -1103,26 +999,18 @@ def process_filtered_files(filter_filenames: list = None):
             start = time.perf_counter()
     
             png_path = Path(png_file_path)
-            # NOTE: Generate output SVG path with same filename but .svg extension
             svg_filename = png_path.stem + ".svg"
             output_svg_path = OUTPUT_DIR / svg_filename
             
-            print()  # NOTE: Add spacing between files for readability
-            logger.info(f"PROCESSING FILE {index}/{total_files}")
-            logger.info(f"   File: {png_path.name}")
-            logger.info(f"   Size: {png_path.stat().st_size} bytes")
+            logger.info(f"[{index}/{total_files}] PROCESSING: {png_path.name}")
+            logger.debug(f"   Size: {png_path.stat().st_size} bytes")
             
-            # NOTE: Skip if SVG already exists unless we want to overwrite
             if output_svg_path.exists():
                 skipped_count += 1
-                logger.info(f"   SKIPPED: SVG already exists ({svg_filename})")
-                logger.info(f"   Progress: {index}/{total_files} files checked")
+                logger.info(f"[{index}/{total_files}] SKIPPED: {svg_filename} (SVG already exists)")
                 continue
             
-            # NOTE: Convert PNG to SVG using local processing function
-            logger.info(f"   Starting conversion process...")
-            # Get the Textless PNG 
-            # Convert it to SVG using local processing function
+            logger.debug(f"   Starting conversion process...")
             output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
             img, detections = resize_img_det(img, detections)         
@@ -1171,15 +1059,12 @@ def process_filtered_files(filter_filenames: list = None):
             processed_count += 1
             final_size = len(resultant_svg_content)
             end = time.perf_counter()
-            logger.info(f"   COMPLETED: {png_path.name} -> {svg_filename} ({final_size} bytes)")
-            logger.info(f"   Processing time: {end - start:.2f} seconds")
-            logger.info(f"   Progress: {index}/{total_files} files processed ({processed_count} successful)")
+            logger.info(f"[{index}/{total_files}] COMPLETED: {svg_filename} | Size: {final_size} bytes | Time: {end - start:.2f}s")
                 
         except Exception as e:
             conversion_failed_count += 1
-            logger.error(f"   PROCESSING ERROR: {png_file_path}: {str(e)}")
-            logger.error(traceback.format_exc())
-            logger.info(f"   Progress: {index}/{total_files} files processed ({conversion_failed_count} conversion failures)")
+            logger.error(f"[{index}/{total_files}] FAILED: {png_path.name} | Error: {str(e)}")
+            logger.debug(traceback.format_exc())
             failures.append({
                 "filename": Path(png_file_path).name,
                 "reason": f"Processing exception: {str(e)}"
@@ -1188,12 +1073,11 @@ def process_filtered_files(filter_filenames: list = None):
             if temp_png and temp_png.exists():
                 try:
                     temp_png.unlink()
-                    logger.info(f"   Cleaned up temporary file: {temp_png.name}")
+                    logger.debug(f"   Cleaned up temporary file: {temp_png.name}")
                 except Exception as cleanup_err:
                     logger.warning(f"   Failed to delete temp file {temp_png}: {cleanup_err}")
     overall_end = time.perf_counter()
 
-    # NOTE: Final summary with clear visual separation
     print()
     print("="*80)
     logger.info(f"LOCAL FILE PROCESSING COMPLETED!")
@@ -1204,7 +1088,6 @@ def process_filtered_files(filter_filenames: list = None):
             f"   Total processing time: "
             f"{overall_end - overall_start:.2f} seconds"
         )
-    # Show separate counts for different types of failures
     if filter_filenames:
         logger.info(f"   Missing files (not in directory): {len(missing_files)} files")
         logger.info(f"   Invalid files (corrupted/unreadable): {len(invalid_files)} files")
@@ -1222,10 +1105,8 @@ def process_filtered_files(filter_filenames: list = None):
     if processed_count > 0:
         logger.info(f"{processed_count} new SVG files created in {OUTPUT_DIR}")
     
-    # Write the failed files report
     write_failed_files_report(failures)
     
-    # Final status assessment
     if total_failures > 0:
         logger.warning(f"Completed with {total_failures} failures")
     
@@ -1248,7 +1129,7 @@ def process_floors_from_api(api_endpoint: str):
     logger.info(f"API Endpoint: {api_endpoint}")
     print("="*80)
     
-    # Step 1: Fetch URLs from API
+    logger.info(f"Fetching floor URLs from API: {api_endpoint}")
     floor_urls = fetch_floor_urls_from_api(api_endpoint)
     
     if not floor_urls:
@@ -1256,7 +1137,6 @@ def process_floors_from_api(api_endpoint: str):
         write_failed_files_report([])
         return False
     
-    # Step 2: Extract filenames from URLs
     logger.info(f"Extracting filenames from {len(floor_urls)} URLs...")
     filenames = extract_filenames_from_urls(floor_urls)
     
@@ -1274,7 +1154,6 @@ def process_floors_from_api(api_endpoint: str):
     
     print("="*80)
     
-    # Step 3: Process only the filtered files
     logger.info(f"Starting filtered processing of {len(filenames)} floors...")
     success = process_filtered_files(filter_filenames=filenames)
     
@@ -1311,7 +1190,6 @@ def parse_arguments_and_update_config():
         help="Output directory for SVG files"
     )
     
-    # Parse arguments
     args, unknown = parser.parse_known_args()
     
     CONVERSION_ENGINE = args.engine
@@ -1333,7 +1211,6 @@ if __name__ == "__main__":
     logger.info(f"Python script: {__file__}")
     logger.info(f"Conversion Engine: {CONVERSION_ENGINE.upper()}")
     
-    # NOTE: Verify required directories exist before processing
     if not INPUT_DIR.exists():
         logger.error(f"Input directory does not exist: {INPUT_DIR}")
         print("="*80 + "\n")
@@ -1345,12 +1222,10 @@ if __name__ == "__main__":
         
     setup_file_logging()
     
-    # NOTE: Display optimization configuration
     logger.info(f"SVGO Optimization: {'Enabled' if ENABLE_SVGO else 'Disabled (using svgcleaner only)'}")
     if not ENABLE_SVGO:
         logger.info(f"Tip: Set ENABLE_SVGO=true to enable additional SVGO optimization")
     
-    # NOTE: Determine processing mode based on API_ENDPOINT
     API_ENDPOINT = os.getenv('API_ENDPOINT', '').strip()
     if API_ENDPOINT:
         logger.info(f"Mode: API-based filtering (processing specific floors from API)")
@@ -1370,4 +1245,4 @@ if __name__ == "__main__":
     total_time = end_time - start_time
 
     logger.info(f"Total conversion time: {total_time:.2f} seconds")
-    print()  # NOTE: Final newline for clean terminal output
+    print() 
