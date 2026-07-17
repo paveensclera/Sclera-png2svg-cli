@@ -1052,9 +1052,9 @@ def process_filtered_files(filter_filenames: list = None):
             tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
 
             # Upload SVG to API
-            # svg_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
-            # upload_response = data.upload_floor(floor_id, svg_bytes)
-            # print("Upload response:", upload_response)
+            svg_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
+            upload_response = data.upload_floor(floor_id, svg_bytes)
+            print("Upload response:", upload_response)
             
             processed_count += 1
             final_size = len(resultant_svg_content)
