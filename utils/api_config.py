@@ -1,19 +1,33 @@
 import os
 from dotenv import load_dotenv
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 load_dotenv()
 
 class Data:
     def __init__(self):
         self.base_url = os.getenv("BASE_URL")
+        self.session = requests.Session()
+        
+        # Configure retry strategy to handle transient connection issues
+        retries = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504],
+            raise_on_status=False
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
 
     def get_floor(self, floor_id):
         if not self.base_url:
             return None
         url = f"{self.base_url}/floor/name/{floor_id}"
         try:
-            response = requests.get(url, timeout=10)
+            response = self.session.get(url, timeout=10)
             response.raise_for_status()
             return response.text
         except Exception as e:
@@ -27,7 +41,7 @@ class Data:
         url = f"{self.base_url}/location/{floor_id}"
 
         try:
-            response = requests.get(url, timeout=10)
+            response = self.session.get(url, timeout=10)
             response.raise_for_status()
 
             data = response.json()
@@ -56,7 +70,7 @@ class Data:
         url = f"{self.base_url}/path/{floor_id}"
 
         try:
-            response = requests.get(url, timeout=10)
+            response = self.session.get(url, timeout=10)
             response.raise_for_status()
             return response.text
         
@@ -71,7 +85,7 @@ class Data:
         url = f"{sclera_base_url}/floor/{floor_id}"
         
         try:
-            response = requests.get(url, timeout=10)
+            response = self.session.get(url, timeout=10)
             if response.status_code != 200:
                 return None
                 
@@ -125,6 +139,6 @@ class Data:
         files = {
             "file": (floor_id, svg_bytes, "image/svg+xml")
         }
-        response = requests.post(url, files=files)
+        response = self.session.post(url, files=files)
         response.raise_for_status()
         return response.text

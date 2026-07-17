@@ -85,6 +85,7 @@ docker run --rm \
     --oom-score-adj 1000 \
     --memory "4g" \
     --shm-size 1g \
+    --network sclera_bridge
     --name "png-processor-api-$(date +%s)" \
     -e API_ENDPOINT="$API_ENDPOINT" \
     -e ENABLE_SVGO="$ENABLE_SVGO" \

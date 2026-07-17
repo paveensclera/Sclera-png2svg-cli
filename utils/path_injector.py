@@ -51,7 +51,7 @@ class PathInjector:
         if floor_locations is not None:
             sorted_locations = sorted(
                 floor_locations,
-                key=lambda loc: loc.get("zindex", 0)
+                key=lambda loc: loc.get("zindex") if loc.get("zindex") is not None else 0
             )
 
             for location in sorted_locations:
@@ -352,7 +352,7 @@ class PathInjector:
             # Sort by z-index if available
             floor_locations = sorted(
                 floor_locations,
-                key=lambda loc: loc.get("zindex", 0)
+                key=lambda loc: loc.get("zindex") if loc.get("zindex") is not None else 0
             )
 
             for location in floor_locations:
