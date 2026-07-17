@@ -45,14 +45,13 @@ class Data:
             response.raise_for_status()
 
             data = response.json()
-
             formatted = [
                 {
                     "name": item.get("name"),
                     "area": item.get("area"),
-                    "isRemoved": item.get("isRemoved"),
-                    "zindex": item.get("zindex"),
-                    "id": item.get("id")
+                    "isRemoved": item.get("is_removed") if item.get("is_removed") is not None else item.get("isRemoved", False),
+                    "zindex": item.get("z_index") if item.get("z_index") is not None else item.get("zindex", 0),
+                    "id": item.get("location_id") or item.get("id")
                 }
                 for item in data
             ]

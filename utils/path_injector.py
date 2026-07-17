@@ -14,8 +14,8 @@ class PathInjector:
     '''
     def write_into_svg_tag(self, root, id, name, geo_data=None):
         # required attributes in the <svg> tag
-        root.set("data-floor-id", str(id))
-        root.set("data-floor-name", str(name))
+        root.set("data-floor-id", str(id) if id is not None else "")
+        root.set("data-floor-name", str(name) if name is not None else "Unnamed Floor")
         root.set("data-sclera", "1")
         if geo_data:
             if geo_data.get("neLat") is not None:
@@ -438,7 +438,7 @@ class PathInjector:
                             "fill": "rgba(100,149,237,0.35)",
                             "stroke": "rgba(50,90,180,0.9)",
                             "stroke-width": "2",
-                            "data-id": str(location_id),
+                            "data-id": str(location_id) if location_id is not None else "",
                             "data-shape-type": shape_type_attr,
                             "data-user-drawn": "true",
                             "data-location": str(name) if name else "Unnamed Location"
