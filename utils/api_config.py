@@ -10,6 +10,7 @@ class Data:
     def __init__(self):
         self.base_url = os.getenv("BASE_URL")
         self.session = requests.Session()
+        self.cached_geo_data = {}
         
         # Configure retry strategy to handle transient connection issues
         retries = Retry(
@@ -29,7 +30,48 @@ class Data:
         try:
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            return response.text
+            
+            import json
+            try:
+                data_dict = response.json()
+                floor_name = data_dict.get("name")
+                
+                initial_position = data_dict.get("initialPosition")
+                if initial_position:
+                    if isinstance(initial_position, str):
+                        try:
+                            coords = json.loads(initial_position)
+                        except Exception:
+                            coords = None
+                    else:
+                        coords = initial_position
+                    
+                    if isinstance(coords, list) and len(coords) >= 2:
+                        p1 = coords[0]  # NW corner: [nwLat, nwLong]
+                        p2 = coords[1]  # SE corner: [seLat, seLong]
+                        if isinstance(p1, list) and len(p1) >= 2 and isinstance(p2, list) and len(p2) >= 2:
+                            nw_lat = float(p1[0])
+                            nw_long = float(p1[1])
+                            se_lat = float(p2[0])
+                            se_long = float(p2[1])
+
+                            angle_val = data_dict.get("angle")
+                            try:
+                                angle_int = int(angle_val) if angle_val is not None else 0
+                            except (ValueError, TypeError):
+                                angle_int = 0
+
+                            self.cached_geo_data[floor_id] = {
+                                "swLat": se_lat,
+                                "swLong": nw_long,
+                                "neLat": nw_lat,
+                                "neLong": se_long,
+                                "rotationAngle": angle_int
+                            }
+                return floor_name
+            except Exception:
+                # Fallback to returning raw text if it's not JSON
+                return response.text
         except Exception as e:
             print(f"Error fetching floor name for floor {floor_id}: {e}")
             return None
@@ -78,6 +120,10 @@ class Data:
             return None
 
     def get_geo_data(self, floor_id):
+        # Return cached geo data if populated from get_floor
+        if hasattr(self, 'cached_geo_data') and floor_id in self.cached_geo_data:
+            return self.cached_geo_data[floor_id]
+
         if not self.base_url:
             return None
         sclera_base_url = self.base_url.replace("/migration", "")
