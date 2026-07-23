@@ -28,7 +28,9 @@ load_env() {
 load_env ".env"
 
 # API Endpoint & Base URL Configuration
+export MODE="${MODE:-}"
 export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
+export MULTI_TENANT_BASEURL="${MULTI_TENANT_BASEURL:-https://tenant.com}"
 export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
@@ -39,6 +41,8 @@ export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 echo "================================================================================"
 echo "PNG to SVG Processing - API-Filtered Mode"
 echo "================================================================================"
+echo "Mode:             $MODE"
+echo "Multi-Tenant URL: $MULTI_TENANT_BASEURL"
 echo "Input directory:  $PNG_INPUT_DIR"
 echo "Output directory: $SVG_OUTPUT_DIR"
 echo "API Endpoint:     $API_ENDPOINT"
@@ -49,22 +53,27 @@ echo ""
 # Create directories if they don't exist
 mkdir -p "$PNG_INPUT_DIR" "$SVG_OUTPUT_DIR"
 
-# Check if PNG files exist
-PNG_COUNT=$(find "$PNG_INPUT_DIR" -name "*.png" -type f 2>/dev/null | wc -l)
+if [ "$MODE" != "multi-tenant" ]; then
+    # Check if PNG files exist for local mode
+    PNG_COUNT=$(find "$PNG_INPUT_DIR" -name "*.png" -type f 2>/dev/null | wc -l)
 
-if [ "$PNG_COUNT" -eq 0 ]; then
-    echo "No PNG files found in $PNG_INPUT_DIR"
+    if [ "$PNG_COUNT" -eq 0 ]; then
+        echo "No PNG files found in $PNG_INPUT_DIR"
+        echo ""
+        echo "To add files:"
+        echo "1. Copy PNG files: cp /path/to/your/files/*.png $PNG_INPUT_DIR"
+        echo "2. Run this script again: $0"
+        echo ""
+        exit 1
+    fi
+
+    echo "Found $PNG_COUNT PNG files in directory"
+    echo "Will fetch list from API and process only matching files"
     echo ""
-    echo "To add files:"
-    echo "1. Copy PNG files: cp /path/to/your/files/*.png $PNG_INPUT_DIR"
-    echo "2. Run this script again: $0"
+else
+    echo "Running in multi-tenant cloud mode. Images will be downloaded and processed directly."
     echo ""
-    exit 1
 fi
-
-echo "Found $PNG_COUNT PNG files in directory"
-echo "Will fetch list from API and process only matching files"
-echo ""
 
 # Show current production status (should be unchanged)
 echo "Production containers (remain unchanged):"
@@ -87,6 +96,8 @@ docker run --rm \
     --shm-size 1g \
     --network sclera_bridge \
     --name "png-processor-api-$(date +%s)" \
+    -e MODE="$MODE" \
+    -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \
     -e API_ENDPOINT="$API_ENDPOINT" \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \

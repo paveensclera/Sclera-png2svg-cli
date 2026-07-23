@@ -8,7 +8,11 @@ load_dotenv()
 
 class Data:
     def __init__(self):
-        self.base_url = os.getenv("BASE_URL")
+        mode = (os.getenv("MODE") or "").lower()
+        if mode == "multi-tenant":
+            self.base_url = os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL")
+        else:
+            self.base_url = os.getenv("BASE_URL")
         self.session = requests.Session()
         self.cached_geo_data = {}
         

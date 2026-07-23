@@ -4,6 +4,7 @@ import logging
 import glob
 import traceback
 import requests
+import re
 from datetime import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -131,6 +132,7 @@ if CONVERSION_ENGINE not in ['potrace', 'vtracer']:
 
 TEMP_DIR = Path("/tmp/floor_map_processing")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+SHM_DIR = Path("/dev/shm") if Path("/dev/shm").exists() else TEMP_DIR
 
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -311,7 +313,7 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     import vtracer
     
     temp_filename = png_path.stem + "_temp"
-    normalized_png = Path("/dev/shm") / f"{temp_filename}_normalized.png"
+    normalized_png = SHM_DIR / f"{temp_filename}_normalized.png"
     
     try:
         normalize_cmd = [
@@ -367,7 +369,7 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
 def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     """Run ImageMagick thresholding and Potrace to convert PNG to SVG"""
     temp_filename = png_path.stem + "_temp"
-    pbm_path = Path("/dev/shm") / f"{temp_filename}.pbm"
+    pbm_path = SHM_DIR / f"{temp_filename}.pbm"
     
     try:
         imagemagick_cmd = [
@@ -426,7 +428,7 @@ def convert_png_to_svg_local(png_path: Path) -> str:
     logger.debug(f"   Input:  {png_path}")
 
     temp_filename = png_path.stem + "_temp"
-    temp_svg_path = Path("/dev/shm") / f"{temp_filename}.svg"
+    temp_svg_path = SHM_DIR / f"{temp_filename}.svg"
 
     try:
         if CONVERSION_ENGINE == "vtracer":
@@ -535,6 +537,55 @@ def fetch_floor_urls_from_api(api_endpoint: str) -> list:
         logger.error(f"Failed to parse API response as JSON: {str(e)}")
         return []
 
+
+def get_base_url() -> str:
+    """
+    Get base URL based on mode.
+    If MODE is 'multi-tenant', returns MULTI_TENANT_BASEURL (falling back to BASE_URL).
+    Otherwise returns BASE_URL.
+    """
+    mode = (os.getenv("MODE") or "").strip().lower()
+    if mode == "multi-tenant":
+        return (os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL") or "").strip()
+    return (os.getenv("BASE_URL") or "").strip()
+
+
+def fetch_vdms_floor_from_cloud_api(base_url: str = None) -> list:
+    """
+    Fetch the list of floor image URLs from the API endpoint
+    
+    Args:
+        base_url: The base URL for the cloud API endpoint
+    
+    Returns:
+        List of floor image URLs, or empty list if request fails
+    """
+    if not base_url:
+        base_url = get_base_url()
+    try:
+        url = f"{base_url}/tenants/floors/imageUrls"
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()  
+        
+        urls = response.json()
+        
+        if not isinstance(urls, list):
+            logger.error(f"API response is not a list: {type(urls)}")
+            return []
+        
+        logger.info(f"Successfully fetched floor URLs from API")
+        return urls
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"API request timed out after 30 seconds")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch floor URLs from API: {str(e)}")
+        return []
+    except ValueError as e:
+        logger.error(f"Failed to parse API response as JSON: {str(e)}")
+        return []
+
 def extract_filenames_from_urls(urls: list) -> list:
     """
     Extract filenames from a list of URLs
@@ -565,6 +616,69 @@ def extract_filenames_from_urls(urls: list) -> list:
     
     logger.info(f"Extracted {len(filenames)} filenames from URLs")
     return filenames
+
+
+def extract_vdmsIds_floorids_from_urls(data) -> dict:
+    """
+    Extract VDMS IDs and floor image URLs from a list of URLs or data structure.
+    
+    Args:
+        data: List of full URLs or data containing URLs
+    
+    Returns:
+        Dict mapping VDMS ID (e.g. 'VDMS885') to a list of floor image URLs
+    """
+    result = {}
+    
+    if isinstance(data, dict):
+        for key, val in data.items():
+            if isinstance(val, list):
+                result[key] = val
+            elif isinstance(val, str):
+                result[key] = [val]
+        return result
+
+    if not isinstance(data, list):
+        return result
+
+    for item in data:
+        if isinstance(item, dict):
+            vdms_id = item.get("vdmsId") or item.get("vdms_id") or item.get("id")
+            url_val = item.get("url") or item.get("imageUrl") or item.get("image_url")
+            if vdms_id:
+                if vdms_id not in result:
+                    result[vdms_id] = []
+                if url_val:
+                    result[vdms_id].append(url_val)
+                continue
+            url = url_val or str(item)
+        elif isinstance(item, str):
+            url = item
+        else:
+            url = str(item)
+
+        if not url:
+            continue
+
+        try:
+            match = re.search(r'/vdms/([^/]+)/floor', url)
+            if not match:
+                match = re.search(r'(VDMS\d+)', url, re.IGNORECASE)
+            if not match:
+                match = re.search(r'/vdms/([^/]+)', url)
+
+            if match:
+                vdms_id = match.group(1)
+                if vdms_id not in result:
+                    result[vdms_id] = []
+                result[vdms_id].append(url)
+            else:
+                logger.warning(f"   Could not extract VDMS ID from URL: {url}")
+        except Exception as e:
+            logger.warning(f"   Failed to process URL: {url} - {str(e)}")
+
+    logger.info(f"Extracted floor URLs for {len(result)} VDMS IDs")
+    return result
 
 def validate_file_readability(file_path: Path) -> tuple[bool, str]:
     """
@@ -777,11 +891,11 @@ def process_local_files(filter_filenames: list = None):
                 continue
             
             logger.debug(f"   Starting conversion process...")
-            output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
+            output_thin = SHM_DIR / f"{png_path.stem}_thinlines.png"
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
             img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
-            temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
+            temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
  
             cv.imwrite(str(temp_png), img)
  
@@ -882,6 +996,8 @@ def load_image(path):
         raise ValueError(f"Could not read image: {path}")
     h, w = img.shape[:2]
     return img, w, h
+
+
 
 def process_filtered_files(filter_filenames: list = None):
     """
@@ -1011,11 +1127,11 @@ def process_filtered_files(filter_filenames: list = None):
                 continue
             
             logger.debug(f"   Starting conversion process...")
-            output_thin = Path("/dev/shm") / f"{png_path.stem}_thinlines.png"
+            output_thin = SHM_DIR / f"{png_path.stem}_thinlines.png"
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
             img, detections = resize_img_det(img, detections)         
             img = remove_txt(img, detections)
-            temp_png = Path("/dev/shm") / f"{png_path.stem}_notext.png"
+            temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
@@ -1109,9 +1225,240 @@ def process_filtered_files(filter_filenames: list = None):
     
     if total_failures > 0:
         logger.warning(f"Completed with {total_failures} failures")
-    
+
     print("="*80)
     return True
+
+
+def download_png(base_url: str = None, vdms_id: str = "", image_id: str = ""):
+    if not base_url:
+        base_url = get_base_url()
+    url = f"{base_url}/images/floors/{image_id}?vdmsId={vdms_id}"
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.content
+    except Exception as e:
+        logger.error(f"Failed to download PNG for image '{image_id}': {str(e)}")
+        return None
+
+def get_image_id_from_url(url: str):
+    """
+    Extracts the image ID (without file extension) from a given URL.
+    Args:
+        url: The URL string to extract the image ID from.
+    Returns:
+        The extracted image ID as a string without extension, or None if not found.
+    """
+    try:
+        parsed_url = urlparse(url)
+        path = parsed_url.path.rstrip('/')
+        path_segments = [seg for seg in path.split('/') if seg]
+        
+        if path_segments:
+            image_filename = path_segments[-1]
+            image_id = os.path.splitext(image_filename)[0]
+            return image_id
+        else:
+            logger.warning(f"URL format unexpected, cannot extract image ID: {url}")
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting image ID from URL '{url}': {str(e)}")
+        return None
+
+def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
+    """
+    Main function for processing floor maps from cloud and uploading generated SVGs directly to cloud.
+    No files are stored permanently on disk.
+    
+    Args:
+        cloud_url: The URL of the cloud service.
+        vdms_floor_map: A dictionary mapping VDMS IDs to lists of image URLs.
+    """
+    setup_file_logging()
+    print("=" * 80)
+    logger.info("STARTING CLOUD FILE PROCESSING (UPLOAD MODE)")
+    logger.info(f"Cloud URL: {cloud_url}")
+    print("=" * 80)
+    
+    failures = []
+    
+    if not check_dependencies():
+        engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
+        deps = f" {engine_name}, and svgcleaner"
+        if ENABLE_SVGO:
+            deps += ", and svgo"
+        logger.error(f"Missing required dependencies. Please install {deps}")
+        write_failed_files_report(failures)
+        return False
+
+    data = Data()
+    injector = PathInjector()
+
+    total_files = sum(len(urls) for urls in vdms_floor_map.values()) if isinstance(vdms_floor_map, dict) else 0
+    logger.info(f"Total floor map URLs to process: {total_files}")
+    print("=" * 80)
+
+    processed_count = 0
+    conversion_failed_count = 0
+    current_index = 0
+    overall_start = time.perf_counter()
+
+    for vdms_id, image_urls in vdms_floor_map.items():
+        for image_url in image_urls:
+            current_index += 1
+            start = time.perf_counter()
+            temp_png_path = None
+            temp_notext_png = None
+
+            try:
+                image_id = get_image_id_from_url(image_url)
+                if not image_id:
+                    logger.error(f"[{current_index}/{total_files}] Could not extract image ID from URL: {image_url}")
+                    failures.append({
+                        "filename": image_url,
+                        "reason": "Could not extract image ID from URL"
+                    })
+                    conversion_failed_count += 1
+                    continue
+
+                logger.info(f"[{current_index}/{total_files}] PROCESSING (VDMS: {vdms_id}, Image: {image_id})")
+
+                # Download PNG bytes from cloud
+                png_bytes = download_png(cloud_url, vdms_id, image_id)
+                if not png_bytes:
+                    logger.error(f"[{current_index}/{total_files}] Failed to download PNG bytes for image {image_id}")
+                    failures.append({
+                        "filename": image_id,
+                        "reason": "Failed to download PNG bytes"
+                    })
+                    conversion_failed_count += 1
+                    continue
+
+                # Temporary storage in memory/tmp for OCR & conversion
+                temp_png_path = SHM_DIR / f"{image_id}_temp.png"
+                temp_png_path.write_bytes(png_bytes)
+
+                # Perform OCR & text removal
+                img, detections = recognize_txt(str(temp_png_path), OCR_INSTANCE)
+                img, detections = resize_img_det(img, detections)
+                img = remove_txt(img, detections)
+
+                temp_notext_png = temp_png_path.parent / f"{image_id}_notext.png"
+                cv.imwrite(str(temp_notext_png), img)
+
+                # Convert to SVG in memory
+                resultant_svg_content = convert_png_to_svg_local(temp_notext_png)
+                if not resultant_svg_content:
+                    conversion_failed_count += 1
+                    logger.error(f"[{current_index}/{total_files}] CONVERSION FAILED for {image_id}")
+                    failures.append({
+                        "filename": image_id,
+                        "reason": "Conversion pipeline failed to generate SVG content"
+                    })
+                    continue
+
+                # Inject elements into SVG
+                floor_id = image_id.split("_")[0]
+                floor_name = data.get_floor(floor_id)
+                paths_string = data.get_paths(floor_id)
+                floor_locations = data.get_locations(floor_id)
+                geo_data = data.get_geo_data(floor_id)
+
+                tree = inject_elements(
+                    svg=resultant_svg_content,
+                    raw_svg_content=resultant_svg_content,
+                    detections=detections,
+                    floor_id=floor_id,
+                    floor_name=floor_name,
+                    floor_locations=floor_locations,
+                    paths=paths_string,
+                    injector=injector,
+                    geo_data=geo_data
+                )
+
+                # Upload SVG directly to cloud API without saving to disk
+                svg_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
+                upload_response = data.upload_floor(floor_id, svg_bytes)
+                logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+
+                processed_count += 1
+                end = time.perf_counter()
+                logger.info(f"[{current_index}/{total_files}] COMPLETED: {floor_id} | Time: {end - start:.2f}s")
+
+            except Exception as e:
+                conversion_failed_count += 1
+                logger.error(f"[{current_index}/{total_files}] FAILED: {image_url} | Error: {str(e)}")
+                logger.debug(traceback.format_exc())
+                failures.append({
+                    "filename": image_url,
+                    "reason": f"Processing exception: {str(e)}"
+                })
+            finally:
+                # Clean up temporary PNG files
+                if temp_png_path and temp_png_path.exists():
+                    try:
+                        temp_png_path.unlink()
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to delete temp file {temp_png_path}: {cleanup_err}")
+                if temp_notext_png and temp_notext_png.exists():
+                    try:
+                        temp_notext_png.unlink()
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to delete temp file {temp_notext_png}: {cleanup_err}")
+
+    overall_end = time.perf_counter()
+
+    print()
+    print("=" * 80)
+    logger.info("CLOUD FILE PROCESSING COMPLETED!")
+    logger.info("FINAL RESULTS:")
+    logger.info(f"   Successfully converted & uploaded: {processed_count} files")
+    logger.info(f"   Total processing time: {overall_end - overall_start:.2f} seconds")
+    if conversion_failed_count > 0:
+        logger.warning(f"   Failures: {conversion_failed_count} files")
+
+    write_failed_files_report(failures)
+    print("=" * 80)
+    return True
+
+def process_floor_from_cloud(cloud_url: str = None):
+    """
+    Fetch floor PNG from the API, process and upload to multi-tenant system.
+     
+    Args:
+        cloud_url: The cloud URL that returns list of floor image URLs
+    
+    Returns:
+        bool: True if processing completed successfully, False otherwise
+    """
+    if not cloud_url:
+        cloud_url = get_base_url()
+
+    setup_file_logging()
+    print("\n" + "="*80)
+    logger.info(f"API-BASED FLOOR PROCESSING MODE FOR CLOUD")
+    logger.info(f"Cloud URL: {cloud_url}")
+    print("="*80)
+    
+    logger.info(f"Fetching floor URLs from API: {cloud_url}")
+    vdms_floors = fetch_vdms_floor_from_cloud_api(cloud_url)
+    if not vdms_floors:
+        logger.error("No floor URLs fetched from API. Cannot proceed.")
+        write_failed_files_report([])
+        return False
+    logger.info(f"Extracting filenames from {len(vdms_floors)} URLs...")
+    floor_mapping = extract_vdmsIds_floorids_from_urls(vdms_floors)
+    if not floor_mapping:
+        logger.error("No filenames extracted from URLs. Cannot proceed.")
+        write_failed_files_report([])
+        return False
+    logger.info(f"Successfully extracted filenames")
+    print("="*80)
+    
+    logger.info(f"Starting processing of floors...")
+    success = process_cloud_floor_maps(cloud_url=cloud_url, vdms_floor_map=floor_mapping)
+    return success
 
 def process_floors_from_api(api_endpoint: str):
     """
@@ -1226,8 +1573,13 @@ if __name__ == "__main__":
     if not ENABLE_SVGO:
         logger.info(f"Tip: Set ENABLE_SVGO=true to enable additional SVGO optimization")
     
+    MODE = os.getenv('MODE', '').strip().lower()
     API_ENDPOINT = os.getenv('API_ENDPOINT', '').strip()
-    if API_ENDPOINT:
+
+    if MODE == 'multi-tenant':
+        logger.info(f"Mode: Multi-tenant cloud processing (Base URL: {get_base_url()})")
+        success = process_floor_from_cloud()
+    elif API_ENDPOINT:
         logger.info(f"Mode: API-based filtering (processing specific floors from API)")
         success = process_floors_from_api(API_ENDPOINT)
     else:
