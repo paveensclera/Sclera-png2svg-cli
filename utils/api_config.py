@@ -10,7 +10,7 @@ class Data:
     def __init__(self):
         mode = (os.getenv("MODE") or "").lower()
         if mode == "multi-tenant":
-            self.base_url = os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL")
+            self.base_url = os.getenv("MULTI_TENANT_BASEURL") + "/api/v1/migration" or os.getenv("BASE_URL")
         else:
             self.base_url = os.getenv("BASE_URL")
         self.session = requests.Session()

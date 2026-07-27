@@ -1233,7 +1233,7 @@ def process_filtered_files(filter_filenames: list = None):
 def download_png(base_url: str = None, vdms_id: str = "", image_id: str = ""):
     if not base_url:
         base_url = get_base_url()
-    url = f"{base_url}/images/floors/{image_id}?vdmsId={vdms_id}"
+    url = f"{base_url}/images/floors/{image_id}?vdms_id={vdms_id}"
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
@@ -1379,8 +1379,15 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
 
                 # Upload SVG directly to cloud API without saving to disk
                 svg_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
-                upload_response = data.upload_floor(floor_id, svg_bytes)
-                logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+                # upload_response = data.upload_floor(floor_id, svg_bytes)
+                # logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+
+                output_dir = "output"                                                                                                                   
+                os.makedirs(output_dir, exist_ok=True)                                                                                                  
+                output_path = os.path.join(output_dir, f"{floor_id}.svg")                                                                               
+                                                                                                                                                        
+                with open(output_path, "wb") as f:                                                                                                      
+                    f.write(svg_bytes)
 
                 processed_count += 1
                 end = time.perf_counter()
