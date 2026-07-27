@@ -1487,13 +1487,12 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                 svg_bytes = ET.tostring(
                     tree.getroot(), encoding="utf-8", xml_declaration=True
                 )
-                # upload_response = data.upload_floor(image_id, svg_bytes)
-                # logger.info(f"[{current_index}/{total_files}] UPLOADED: {image_id} | Response: {upload_response}")
+                upload_response = data.upload_floor(image_id, svg_bytes)
+                logger.info(f"[{current_index}/{total_files}] UPLOADED: {image_id} | Response: {upload_response}")
 
-                output_path = os.path.join(OUTPUT_DIR, f"{image_id}.svg")
-
-                with open(output_path, "wb") as f:
-                    f.write(svg_bytes)
+                # output_path = os.path.join(OUTPUT_DIR, f"{image_id}.svg")
+                # with open(output_path, "wb") as f:
+                #     f.write(svg_bytes)
 
                 processed_count += 1
                 end = time.perf_counter()
