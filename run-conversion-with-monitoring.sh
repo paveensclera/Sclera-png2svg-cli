@@ -419,8 +419,14 @@ main() {
     echo -e "${YELLOW}Starting PNG to SVG conversion container...${NC}"
     echo ""
     
+    NETWORK_ARG=""
+    if [ "$MODE" != "multi-tenant" ]; then
+        NETWORK_ARG="--network sclera_bridge"
+    fi
+
     # Start container in background
     docker run -d --rm \
+        $NETWORK_ARG \
         --cpu-shares 128 \
         --cpus "4.0" \
         --blkio-weight 100 \

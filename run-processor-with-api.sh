@@ -85,8 +85,14 @@ echo "   (This is a temporary container that will be removed when done)"
 echo "   SVGO Optimization: ${ENABLE_SVGO}"
 echo ""
 
+NETWORK_ARG=""
+if [ "$MODE" != "multi-tenant" ]; then
+    NETWORK_ARG="--network sclera_bridge"
+fi
+
 # Run the processing container with API_ENDPOINT environment variable
 docker run --rm \
+    $NETWORK_ARG \
     --cpu-shares 128 \
     --cpus "4.0" \
     --blkio-weight 100 \
@@ -94,7 +100,6 @@ docker run --rm \
     --oom-score-adj 1000 \
     --memory "4g" \
     --shm-size 1g \
-    --network sclera_bridge \
     --name "png-processor-api-$(date +%s)" \
     -e MODE="$MODE" \
     -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \

@@ -29,6 +29,7 @@ load_env ".env"
 load_env ".env.local"
 
 # API Endpoint & Base URL Configuration
+export MODE="${MODE:-}"
 export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 
 # Optional: Disable SVGO optimization (uncomment to disable)
@@ -74,8 +75,14 @@ echo "This is a temporary container that will be removed when done."
 echo "SVGO Optimization: ${ENABLE_SVGO}"
 echo ""
 
+NETWORK_ARG=""
+if [ "$MODE" != "multi-tenant" ]; then
+    NETWORK_ARG="--network sclera_bridge"
+fi
+
 # Run the processing container
 docker run --rm \
+    $NETWORK_ARG \
     --cpu-shares 128 \
     --cpus "4.0" \
     --blkio-weight 100 \
