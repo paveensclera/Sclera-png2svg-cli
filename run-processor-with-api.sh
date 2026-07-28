@@ -11,15 +11,18 @@ load_env() {
     local env_file="$1"
     if [ -f "$env_file" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
             [[ "$line" =~ ^[[:space:]]*# ]] && continue
             [[ -z "${line//[[:space:]]/}" ]] && continue
             if [[ "$line" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
                 key="${BASH_REMATCH[1]}"
                 val="${BASH_REMATCH[2]}"
+                val="${val%$'\r'}"
                 val="${val#\"}"
                 val="${val%\"}"
                 val="${val#\'}"
                 val="${val%\'}"
+                val="${val%$'\r'}"
                 export "$key"="$val"
             fi
         done < "$env_file"
@@ -95,8 +98,8 @@ docker run --rm \
     $NETWORK_ARG \
     --cpu-shares 128 \
     --cpus "4.0" \
-    --blkio-weight 100 \
     --memory-reservation "512m" \
+    --blkio-weight 100 \
     --oom-score-adj 1000 \
     --memory "4g" \
     --shm-size 1g \

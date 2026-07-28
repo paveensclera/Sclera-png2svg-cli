@@ -9,12 +9,14 @@ load_dotenv()
 
 class Data:
     def __init__(self):
-        mode = (os.getenv("MODE") or "").lower()
+        mode = (os.getenv("MODE") or "").strip().strip("\r\n\"'").lower()
         if mode == "multi-tenant":
             raw_base = os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL") or ""
-            self.base_url = f"{raw_base.rstrip('/')}/api/v1/migration"
+            raw_base = raw_base.strip().strip("\r\n\"'").rstrip("/")
+            self.base_url = f"{raw_base}/api/v1/migration"
         else:
-            self.base_url = os.getenv("BASE_URL")
+            raw_base = os.getenv("BASE_URL") or ""
+            self.base_url = raw_base.strip().strip("\r\n\"'")
         self.session = requests.Session()
         self.cached_geo_data = {}
 
@@ -204,10 +206,17 @@ class Data:
             print(f"Error fetching/parsing geo data for floor {floor_id}: {e}")
             return None
 
-    def upload_floor(self, floor_id, svg_bytes):
+    def upload_floor(self, floor_id, svg_bytes, vdms_id=None):
         url = f"{self.base_url}/upload"
+        params = {"floor_id": floor_id}
+        if vdms_id:
+            params["vdms_id"] = vdms_id
 
-        files = {"file": (floor_id, svg_bytes, "image/svg+xml")}
-        response = self.session.post(url, files=files)
+        files = {"file": (f"{floor_id}.svg", svg_bytes, "image/svg+xml")}
+        response = self.session.post(url, files=files, params=params)
+
+        if response.status_code >= 400:
+            print(f"DEBUG UPLOAD ERROR {response.status_code}: {response.text}")
+
         response.raise_for_status()
         return response.text

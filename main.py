@@ -571,12 +571,12 @@ def get_base_url() -> str:
     If MODE is 'multi-tenant', returns MULTI_TENANT_BASEURL (falling back to BASE_URL).
     Otherwise returns BASE_URL.
     """
-    mode = (os.getenv("MODE") or "").strip().lower()
+    mode = (os.getenv("MODE") or "").strip().strip("\r\n\"'").lower()
     if mode == "multi-tenant":
-        return (
-            os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL") or ""
-        ).strip()
-    return (os.getenv("BASE_URL") or "").strip()
+        raw = os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL") or ""
+    else:
+        raw = os.getenv("BASE_URL") or ""
+    return raw.strip().strip("\r\n\"'").rstrip("/")
 
 
 def fetch_vdms_floor_from_cloud_api(base_url: str = None):
@@ -1386,6 +1386,9 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
     data = Data()
     injector = PathInjector()
 
+    # # Temporary testing filter for VDMS885
+    # vdms_floor_map = {k: v for k, v in vdms_floor_map.items() if k == "VDMS885"}
+
     total_files = (
         sum(len(urls) for urls in vdms_floor_map.values())
         if isinstance(vdms_floor_map, dict)
@@ -1483,16 +1486,18 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     geo_data=geo_data,
                 )
 
-                # Upload SVG directly to cloud API without saving to disk
+                # Save generated SVG to OUTPUT_DIR
                 svg_bytes = ET.tostring(
                     tree.getroot(), encoding="utf-8", xml_declaration=True
                 )
-                upload_response = data.upload_floor(image_id, svg_bytes)
-                logger.info(f"[{current_index}/{total_files}] UPLOADED: {image_id} | Response: {upload_response}")
 
-                # output_path = os.path.join(OUTPUT_DIR, f"{image_id}.svg")
-                # with open(output_path, "wb") as f:
-                #     f.write(svg_bytes)
+                # upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
+                # logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+
+                output_path = os.path.join(OUTPUT_DIR, f"{floor_id}.svg")
+                with open(output_path, "wb") as f:
+                    f.write(svg_bytes)
+                logger.info(f"[{current_index}/{total_files}] SAVED TO DISK: {output_path}")
 
                 processed_count += 1
                 end = time.perf_counter()
