@@ -99,7 +99,6 @@ docker run --rm \
     --cpu-shares 128 \
     --cpus "4.0" \
     --memory-reservation "512m" \
-    --blkio-weight 100 \
     --oom-score-adj 1000 \
     --memory "4g" \
     --shm-size 1g \
@@ -114,6 +113,7 @@ docker run --rm \
     --add-host=host.docker.internal:host-gateway \
     -e BASE_URL="$BASE_URL" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+    -e VDMS_FILTER="$VDMS_FILTER" \
     "$IMAGE_NAME" "$@"
 
 # Check results

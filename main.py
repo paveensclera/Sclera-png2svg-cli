@@ -5,10 +5,15 @@ import glob
 import traceback
 import requests
 import re
+import json
 from datetime import time
 from pathlib import Path
 from urllib.parse import urlparse
 import time
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from utils.api_config import Data
 from utils.path_injector import PathInjector
 from utils.ocr import (
@@ -160,6 +165,66 @@ SHM_DIR = Path("/dev/shm") if Path("/dev/shm").exists() else TEMP_DIR
 
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def parse_vdms_filter(raw_val) -> set:
+    """
+    Parse VDMS filter string from environment variable or CLI argument.
+    Returns a set of VDMS IDs (strings). If empty, returns set().
+
+    Supports:
+      - Single VDMS: "VDMS885" -> {"VDMS885"}
+      - Comma-separated: "VDMS885, VDMS886" -> {"VDMS885", "VDMS886"}
+      - JSON list format: '["VDMS885", "VDMS886"]'
+      - Space-separated: "VDMS885 VDMS886" -> {"VDMS885", "VDMS886"}
+      - Empty / None -> set() (runs for all VDMS)
+    """
+    if not raw_val:
+        return set()
+
+    raw_val = str(raw_val).strip().strip('"\'')
+    if not raw_val:
+        return set()
+
+    if raw_val.startswith("[") and raw_val.endswith("]"):
+        try:
+            parsed = json.loads(raw_val)
+            if isinstance(parsed, list):
+                return {
+                    str(item).strip().strip('"\'')
+                    for item in parsed
+                    if str(item).strip()
+                }
+        except Exception:
+            raw_val = raw_val[1:-1]
+
+    if "," in raw_val:
+        tokens = raw_val.split(",")
+    else:
+        tokens = raw_val.split()
+
+    result = set()
+    for token in tokens:
+        cleaned = token.strip().strip('"\'[]')
+        if cleaned:
+            result.add(cleaned)
+
+    return result
+
+
+def get_vdms_filter() -> set:
+    """
+    Get VDMS filter set from environment variables.
+    Checks VDMS_FILTER, VDMS_LIST, VDMS_IDS, or VDMS.
+    """
+    raw_val = (
+        os.getenv("VDMS_FILTER")
+        or os.getenv("VDMS_LIST")
+        or os.getenv("VDMS_IDS")
+        or os.getenv("VDMS")
+        or ""
+    )
+    return parse_vdms_filter(raw_val)
 
 
 def analyze_image_for_conversion(png_path: Path) -> dict:
@@ -1386,8 +1451,25 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
     data = Data()
     injector = PathInjector()
 
-    # # Temporary testing filter for VDMS885
-    # vdms_floor_map = {k: v for k, v in vdms_floor_map.items() if k == "VDMS885"}
+    # Apply VDMS filter from .env / environment / CLI
+    vdms_filter = get_vdms_filter()
+    if vdms_filter:
+        logger.info(f"Applying VDMS filter: {sorted(list(vdms_filter))}")
+        vdms_filter_upper = {v.upper() for v in vdms_filter}
+        filtered_map = {
+            k: v
+            for k, v in vdms_floor_map.items()
+            if k in vdms_filter or k.upper() in vdms_filter_upper
+        }
+        logger.info(
+            f"Filtered {len(vdms_floor_map)} total VDMS box(es) down to {len(filtered_map)} matching box(es): {list(filtered_map.keys())}"
+        )
+        vdms_floor_map = filtered_map
+        if not vdms_floor_map:
+            logger.warning(
+                f"No matching VDMS boxes found for filter {sorted(list(vdms_filter))}. Nothing to process."
+            )
+            return True
 
     total_files = (
         sum(len(urls) for urls in vdms_floor_map.values())
@@ -1491,13 +1573,13 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     tree.getroot(), encoding="utf-8", xml_declaration=True
                 )
 
-                # upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
-                # logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+                upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
+                logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
 
-                output_path = os.path.join(OUTPUT_DIR, f"{floor_id}.svg")
-                with open(output_path, "wb") as f:
-                    f.write(svg_bytes)
-                logger.info(f"[{current_index}/{total_files}] SAVED TO DISK: {output_path}")
+                # output_path = os.path.join(OUTPUT_DIR, f"{floor_id}.svg")
+                # with open(output_path, "wb") as f:
+                #     f.write(svg_bytes)
+                # logger.info(f"[{current_index}/{total_files}] SAVED TO DISK: {output_path}")
 
                 processed_count += 1
                 end = time.perf_counter()
@@ -1671,8 +1753,18 @@ def parse_arguments_and_update_config():
         default=str(OUTPUT_DIR),
         help="Output directory for SVG files",
     )
+    parser.add_argument(
+        "--vdms",
+        "-v",
+        type=str,
+        default="",
+        help="Filter specific VDMS ID(s), e.g. VDMS885 or VDMS885,VDMS886 (default: VDMS_FILTER env var or all)",
+    )
 
     args, unknown = parser.parse_known_args()
+
+    if args.vdms:
+        os.environ["VDMS_FILTER"] = args.vdms
 
     CONVERSION_ENGINE = args.engine
     ENABLE_SVGO = not args.disable_svgo
@@ -1709,6 +1801,12 @@ if __name__ == "__main__":
     )
     if not ENABLE_SVGO:
         logger.info(f"Tip: Set ENABLE_SVGO=true to enable additional SVGO optimization")
+
+    vdms_filter = get_vdms_filter()
+    if vdms_filter:
+        logger.info(f"VDMS Filter: {', '.join(sorted(list(vdms_filter)))}")
+    else:
+        logger.info("VDMS Filter: None (processing all VDMS)")
 
     MODE = os.getenv("MODE", "").strip().lower()
     API_ENDPOINT = os.getenv("API_ENDPOINT", "").strip()

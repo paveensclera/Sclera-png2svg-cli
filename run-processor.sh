@@ -96,6 +96,7 @@ docker run --rm \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
     -e BASE_URL="$BASE_URL" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+    -e VDMS_FILTER="$VDMS_FILTER" \
     "$IMAGE_NAME" "$@"
 
 # Check results

@@ -443,6 +443,7 @@ main() {
         --add-host=host.docker.internal:host-gateway \
         -e BASE_URL="$BASE_URL" \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+        -e VDMS_FILTER="$VDMS_FILTER" \
         "$IMAGE_NAME" "$@" > /dev/null
     
     echo -e "${GREEN}Container started: $CONTAINER_NAME${NC}"
