@@ -135,12 +135,46 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+_RESOLUTION_THRESHOLD = 4_000_000
+_IM_SUPPORTS_AUTO_THRESHOLD: bool | None = None
+
+def _supports_auto_threshold() -> bool:
+    """Return True if this ImageMagick build supports -auto-threshold OTSU (IM 7+).
+    Result is cached so the subprocess is only run once per process lifetime."""
+    global _IM_SUPPORTS_AUTO_THRESHOLD
+    if _IM_SUPPORTS_AUTO_THRESHOLD is None:
+        try:
+            import re
+            result = subprocess.run(
+                ["convert", "--version"], capture_output=True, text=True, timeout=5
+            )
+            match = re.search(r"Version: ImageMagick (\d+)\.", result.stdout)
+            _IM_SUPPORTS_AUTO_THRESHOLD = bool(match and int(match.group(1)) >= 7)
+        except Exception:
+            _IM_SUPPORTS_AUTO_THRESHOLD = False
+        logger.info(f"ImageMagick -auto-threshold OTSU supported: {_IM_SUPPORTS_AUTO_THRESHOLD}")
+    return _IM_SUPPORTS_AUTO_THRESHOLD
+
+def _needs_preprocessing(image_info: dict) -> bool:
+    """Return True if the image is below the resolution threshold and needs
+    upscaling and denoising before binarization."""
+    width = image_info.get("width", 0)
+    height = image_info.get("height", 0)
+    pixel_count = width * height
+    if pixel_count < _RESOLUTION_THRESHOLD:
+        logger.info(
+            f"Preprocessing required — pixels={pixel_count} (threshold={_RESOLUTION_THRESHOLD}), "
+            f"std_dev={image_info.get('std_dev', 'N/A')}"
+        )
+        return True
+    return False
+
 def analyze_image_for_conversion(png_path: Path) -> dict:
     """Analyze image properties to help with conversion debugging"""
     try:
         identify_cmd = [
             "identify", "-format", 
-            "%[colorspace] %[type] %w %h %[colors] %[mean] %[standard-deviation]", 
+            "%[colorspace] %[type] %w %h %[colors] %[mean] %[fx:standard_deviation]", 
             str(png_path)
         ]
         
@@ -148,7 +182,7 @@ def analyze_image_for_conversion(png_path: Path) -> dict:
         
         if result.returncode == 0:
             parts = result.stdout.strip().split()
-            return {
+            info = {
                 "colorspace": parts[0],
                 "type": parts[1], 
                 "width": int(parts[2]),
@@ -157,6 +191,11 @@ def analyze_image_for_conversion(png_path: Path) -> dict:
                 "mean": float(parts[5]),
                 "std_dev": float(parts[6])
             }
+            logger.info(
+                f"Image analysis: {info['width']}x{info['height']} px, "
+                f"std_dev={info['std_dev']:.4f}"
+            )
+            return info
         else:
             logger.warning(f"Could not analyze image: {result.stderr}")
             return {}
@@ -204,6 +243,31 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
             
     except Exception as e:
         logger.error(f"     SVG standardization failed: {str(e)}")
+        return svg_content
+
+def flatten_svg_content(svg_content: str) -> str:
+    """Flatten SVG by removing <g> tags and propagating attributes to children."""
+    try:
+        root = ET.fromstring(svg_content)
+
+        def recurse_and_flatten(parent, group):
+            for child in list(group):
+                for attr, value in group.attrib.items():
+                    if attr not in child.attrib:
+                        child.attrib[attr] = value
+                parent.append(child)
+                if child.tag == '{http://www.w3.org/2000/svg}g' or child.tag == 'g':
+                    recurse_and_flatten(parent, child)
+            parent.remove(group)
+
+        for elem in list(root):
+            if elem.tag == '{http://www.w3.org/2000/svg}g' or elem.tag == 'g':
+                recurse_and_flatten(root, elem)
+
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
+    except Exception as e:
+        logger.warning(f"     SVG flattening failed, using unflattened SVG: {str(e)}")
         return svg_content
 
 def optimize_svg(svg_content: str) -> str:
@@ -364,17 +428,38 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             logger.warning(f"   Failed to delete normalized PNG: {str(e)}")
 
 
-def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
-    """Run ImageMagick thresholding and Potrace to convert PNG to SVG"""
+def run_potrace_conversion(png_path: Path, temp_svg_path: Path, image_info: dict | None = None) -> bool:
+    """Run ImageMagick thresholding (with adaptive preprocessing if needed) and Potrace to convert PNG to SVG"""
     temp_filename = png_path.stem + "_temp"
     pbm_path = Path("/dev/shm") / f"{temp_filename}.pbm"
     
     try:
-        imagemagick_cmd = [
-            "convert", str(png_path),
-            "-threshold", "98%",
-            str(pbm_path)
-        ]
+        preprocess = image_info is not None and _needs_preprocessing(image_info)
+        if preprocess:
+            if _supports_auto_threshold():
+                threshold_args = ["-auto-threshold", "OTSU"]
+                logger.info("Applying low-quality preprocessing: grayscale + upscale + blur/sharpen + OTSU threshold + denoise")
+            else:
+                threshold_args = ["-normalize", "-threshold", "50%"]
+                logger.info("Applying low-quality preprocessing: grayscale + upscale + blur/sharpen + normalize+threshold + denoise")
+            imagemagick_cmd = [
+                "convert", str(png_path),
+                "-colorspace", "Gray",
+                "-resize", "4000x4000<",
+                "-blur", "0x0.8",
+                "-unsharp", "0x2+1.5+0",
+                *threshold_args,
+                "-morphology", "Open", "Disk:1.0",
+                str(pbm_path)
+            ]
+        else:
+            logger.info("High-quality image detected — using standard threshold, no preprocessing")
+            imagemagick_cmd = [
+                "convert", str(png_path),
+                "-threshold", "99%",
+                str(pbm_path)
+            ]
+
         result = subprocess.run(
             imagemagick_cmd,
             capture_output=True,
@@ -388,9 +473,11 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             logger.error("   PBM file was not created")
             return False
         
+        turdsize = "10" if preprocess else "2"
         potrace_cmd = [
             "potrace", str(pbm_path),
             "-s",
+            "-t", turdsize,
             "-o", str(temp_svg_path)
         ]
         result = subprocess.run(
@@ -421,7 +508,7 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
 
 
 def convert_png_to_svg_local(png_path: Path) -> str:
-    """Convert PNG to SVG using either Potrace or VTracer based on configuration"""
+    """Convert PNG to SVG using either Potrace (with adaptive preprocessing) or VTracer based on configuration"""
     logger.debug(f"CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
     logger.debug(f"   Input:  {png_path}")
 
@@ -429,12 +516,14 @@ def convert_png_to_svg_local(png_path: Path) -> str:
     temp_svg_path = Path("/dev/shm") / f"{temp_filename}.svg"
 
     try:
+        image_info = analyze_image_for_conversion(png_path)
+
         if CONVERSION_ENGINE == "vtracer":
             logger.debug(f"   Running VTracer for conversion...")
             success = run_vtracer_conversion(png_path, temp_svg_path)
         else:
             logger.debug(f"   Running Potrace for conversion...")
-            success = run_potrace_conversion(png_path, temp_svg_path)
+            success = run_potrace_conversion(png_path, temp_svg_path, image_info)
 
         if not success or not temp_svg_path.exists():
             logger.error(f"   Conversion tool failed to generate SVG for {png_path.name}")
@@ -449,12 +538,15 @@ def convert_png_to_svg_local(png_path: Path) -> str:
         logger.debug(f"   Optimizing SVG file...")
         optimized_svg_content = optimize_svg(standardized_svg_content)
 
+        logger.debug(f"   Flattening SVG groups...")
+        flattened_svg_content = flatten_svg_content(optimized_svg_content)
+
         try:
             temp_svg_path.unlink(missing_ok=True)
         except Exception as e:
             logger.warning(f"   Failed to clean up temp SVG file: {str(e)}")
 
-        return optimized_svg_content
+        return flattened_svg_content
 
     except Exception as e:
         logger.error(f"   Conversion pipeline failed for {png_path.name}: {str(e)}")
