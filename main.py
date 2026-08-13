@@ -227,13 +227,53 @@ def get_vdms_filter() -> set:
     return parse_vdms_filter(raw_val)
 
 
+_RESOLUTION_THRESHOLD = 4_000_000
+_IM_SUPPORTS_AUTO_THRESHOLD: bool | None = None
+
+
+def _supports_auto_threshold() -> bool:
+    """Return True if this ImageMagick build supports -auto-threshold OTSU (IM 7+).
+    Result is cached so the subprocess is only run once per process lifetime."""
+    global _IM_SUPPORTS_AUTO_THRESHOLD
+    if _IM_SUPPORTS_AUTO_THRESHOLD is None:
+        try:
+            import re
+
+            result = subprocess.run(
+                ["convert", "--version"], capture_output=True, text=True, timeout=5
+            )
+            match = re.search(r"Version: ImageMagick (\d+)\.", result.stdout)
+            _IM_SUPPORTS_AUTO_THRESHOLD = bool(match and int(match.group(1)) >= 7)
+        except Exception:
+            _IM_SUPPORTS_AUTO_THRESHOLD = False
+        logger.info(
+            f"ImageMagick -auto-threshold OTSU supported: {_IM_SUPPORTS_AUTO_THRESHOLD}"
+        )
+    return _IM_SUPPORTS_AUTO_THRESHOLD
+
+
+def _needs_preprocessing(image_info: dict) -> bool:
+    """Return True if the image is below the resolution threshold and needs
+    upscaling and denoising before binarization."""
+    width = image_info.get("width", 0)
+    height = image_info.get("height", 0)
+    pixel_count = width * height
+    if pixel_count < _RESOLUTION_THRESHOLD:
+        logger.info(
+            f"Preprocessing required — pixels={pixel_count} (threshold={_RESOLUTION_THRESHOLD}), "
+            f"std_dev={image_info.get('std_dev', 'N/A')}"
+        )
+        return True
+    return False
+
+
 def analyze_image_for_conversion(png_path: Path) -> dict:
     """Analyze image properties to help with conversion debugging"""
     try:
         identify_cmd = [
             "identify",
             "-format",
-            "%[colorspace] %[type] %w %h %[colors] %[mean] %[standard-deviation]",
+            "%[colorspace] %[type] %w %h %[colors] %[mean] %[fx:standard_deviation]",
             str(png_path),
         ]
 
@@ -243,7 +283,7 @@ def analyze_image_for_conversion(png_path: Path) -> dict:
 
         if result.returncode == 0:
             parts = result.stdout.strip().split()
-            return {
+            info = {
                 "colorspace": parts[0],
                 "type": parts[1],
                 "width": int(parts[2]),
@@ -252,6 +292,11 @@ def analyze_image_for_conversion(png_path: Path) -> dict:
                 "mean": float(parts[5]),
                 "std_dev": float(parts[6]),
             }
+            logger.info(
+                f"Image analysis: {info['width']}x{info['height']} px, "
+                f"std_dev={info['std_dev']:.4f}"
+            )
+            return info
         else:
             logger.warning(f"Could not analyze image: {result.stderr}")
             return {}
@@ -270,7 +315,6 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
     - Inserts white background rectangle for consistent appearance
     """
     try:
-
         try:
             from xml.dom import minidom
 
@@ -306,6 +350,42 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
         return svg_content
 
 
+def flatten_svg_content(svg_content: str) -> str:
+    """Flatten SVG by removing <g> tags and propagating attributes to children."""
+    try:
+        root = ET.fromstring(svg_content)
+
+        def recurse_and_flatten(parent, group):
+            for child in list(group):
+                for attr, value in group.attrib.items():
+                    if attr not in child.attrib:
+                        child.attrib[attr] = value
+                parent.append(child)
+                if child.tag == "{http://www.w3.org/2000/svg}g" or child.tag == "g":
+                    recurse_and_flatten(parent, child)
+            parent.remove(group)
+
+        for elem in list(root):
+            if elem.tag == "{http://www.w3.org/2000/svg}g" or elem.tag == "g":
+                recurse_and_flatten(root, elem)
+
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+    except Exception as e:
+        logger.warning(f"     SVG flattening failed, using unflattened SVG: {str(e)}")
+        return svg_content
+
+
+def is_valid_xml(xml_str: str) -> bool:
+    if not xml_str or not xml_str.strip():
+        return False
+    try:
+        ET.fromstring(xml_str)
+        return True
+    except Exception:
+        return False
+
+
 def optimize_svg(svg_content: str) -> str:
     """
     Optimize SVG file using svgcleaner and optionally svgo for maximum compression and quality
@@ -317,7 +397,6 @@ def optimize_svg(svg_content: str) -> str:
     SVGO can be disabled by setting ENABLE_SVGO=false environment variable
     """
     try:
-
         svgcleaner_cmd = [
             "svgcleaner",
             "-",
@@ -347,10 +426,17 @@ def optimize_svg(svg_content: str) -> str:
             stderr=subprocess.PIPE,
             text=True,
         )
-        cleaned_svg, cleaner_err = svgcleaner.communicate(input=svg_content, timeout=60)
+        cleaned_svg, cleaner_err = svgcleaner.communicate(
+            input=svg_content, timeout=60
+        )
 
-        if svgcleaner.returncode != 0:
-            logger.warning(f"     svgcleaner failed: {cleaner_err}")
+        if svgcleaner.returncode != 0 or not is_valid_xml(cleaned_svg):
+            if svgcleaner.returncode != 0:
+                logger.warning(f"     svgcleaner failed: {cleaner_err}")
+            else:
+                logger.warning(
+                    f"     svgcleaner output is invalid or truncated XML, falling back to original SVG"
+                )
             cleaned_svg = svg_content
 
         if not ENABLE_SVGO:
@@ -382,17 +468,22 @@ def optimize_svg(svg_content: str) -> str:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            optimized_svg, svgo_err = result.communicate(input=cleaned_svg, timeout=60)
+            optimized_svg, svgo_err = result.communicate(
+                input=cleaned_svg, timeout=60
+            )
 
-            if result.returncode != 0:
-                logger.warning(f"     svgo failed: {svgo_err}")
+            if result.returncode != 0 or not is_valid_xml(optimized_svg):
+                if result.returncode != 0:
+                    logger.warning(f"     svgo failed: {svgo_err}")
+                else:
+                    logger.warning(
+                        f"     svgo output is invalid or truncated XML, falling back to cleaned SVG"
+                    )
                 optimized_svg = cleaned_svg
 
         # Validate the optimized SVG
-        if not optimized_svg:
-            logger.error(
-                "     Optimized SVG is invalid or SVGO set to false, using original"
-            )
+        if not is_valid_xml(optimized_svg):
+            logger.error("     Optimized SVG is invalid or truncated, using original")
             optimized_svg = svg_content
         else:
             final_size = len(optimized_svg)
@@ -414,7 +505,7 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
     import vtracer
 
     temp_filename = png_path.stem + "_temp"
-    normalized_png = SHM_DIR / f"{temp_filename}_normalized.png"
+    normalized_png = TEMP_DIR / f"{temp_filename}_normalized.png"
 
     try:
         normalize_cmd = [
@@ -469,13 +560,55 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             logger.warning(f"   Failed to delete normalized PNG: {str(e)}")
 
 
-def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
-    """Run ImageMagick thresholding and Potrace to convert PNG to SVG"""
+def run_potrace_conversion(
+    png_path: Path, temp_svg_path: Path, image_info: dict | None = None
+) -> bool:
+    """Run ImageMagick thresholding (with adaptive preprocessing if needed) and Potrace to convert PNG to SVG"""
     temp_filename = png_path.stem + "_temp"
-    pbm_path = SHM_DIR / f"{temp_filename}.pbm"
+    pbm_path = TEMP_DIR / f"{temp_filename}.pbm"
 
     try:
-        imagemagick_cmd = ["convert", str(png_path), "-threshold", "98%", str(pbm_path)]
+        preprocess = image_info is not None and _needs_preprocessing(image_info)
+        if preprocess:
+            if _supports_auto_threshold():
+                threshold_args = ["-auto-threshold", "OTSU"]
+                logger.info(
+                    "Applying low-quality preprocessing: grayscale + upscale + blur/sharpen + OTSU threshold + denoise"
+                )
+            else:
+                threshold_args = ["-normalize", "-threshold", "50%"]
+                logger.info(
+                    "Applying low-quality preprocessing: grayscale + upscale + blur/sharpen + normalize+threshold + denoise"
+                )
+            imagemagick_cmd = [
+                "convert",
+                str(png_path),
+                "-colorspace",
+                "Gray",
+                "-resize",
+                "4000x4000<",
+                "-blur",
+                "0x0.8",
+                "-unsharp",
+                "0x2+1.5+0",
+                *threshold_args,
+                "-morphology",
+                "Open",
+                "Disk:1.0",
+                str(pbm_path),
+            ]
+        else:
+            logger.info(
+                "High-quality image detected — using standard threshold (99%), no preprocessing"
+            )
+            imagemagick_cmd = [
+                "convert",
+                str(png_path),
+                "-threshold",
+                "99%",
+                str(pbm_path),
+            ]
+
         result = subprocess.run(
             imagemagick_cmd, capture_output=True, text=True, timeout=300
         )
@@ -486,7 +619,16 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             logger.error("   PBM file was not created")
             return False
 
-        potrace_cmd = ["potrace", str(pbm_path), "-s", "-o", str(temp_svg_path)]
+        turdsize = "10" if preprocess else "2"
+        potrace_cmd = [
+            "potrace",
+            str(pbm_path),
+            "-s",
+            "-t",
+            turdsize,
+            "-o",
+            str(temp_svg_path),
+        ]
         result = subprocess.run(
             potrace_cmd, capture_output=True, text=True, timeout=120
         )
@@ -512,12 +654,12 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path) -> bool:
 
 
 def convert_png_to_svg_local(png_path: Path) -> str:
-    """Convert PNG to SVG using either Potrace or VTracer based on configuration"""
+    """Convert PNG to SVG using either Potrace (with adaptive preprocessing) or VTracer based on configuration"""
     logger.debug(f"CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
     logger.debug(f"   Input:  {png_path}")
 
     temp_filename = png_path.stem + "_temp"
-    temp_svg_path = SHM_DIR / f"{temp_filename}.svg"
+    temp_svg_path = TEMP_DIR / f"{temp_filename}.svg"
 
     try:
         if CONVERSION_ENGINE == "vtracer":
@@ -525,29 +667,34 @@ def convert_png_to_svg_local(png_path: Path) -> str:
             success = run_vtracer_conversion(png_path, temp_svg_path)
         else:
             logger.debug(f"   Running Potrace for conversion...")
-            success = run_potrace_conversion(png_path, temp_svg_path)
+            # Pass image_info=None to match standard thresholding (bypasses low-quality blur/open preprocessing)
+            success = run_potrace_conversion(png_path, temp_svg_path, None)
 
         if not success or not temp_svg_path.exists():
-            logger.error(
-                f"   Conversion tool failed to generate SVG for {png_path.name}"
-            )
+            logger.error(f"   Conversion tool failed to generate SVG for {png_path.name}")
             return None
 
-        logger.debug(f"   Standardizing SVG for frontend compatibility...")
         with open(temp_svg_path, "r", encoding="utf-8") as f:
             svg_content = f.read()
 
-        standardized_svg_content = standardize_svg_for_frontend(svg_content)
+        if not is_valid_xml(svg_content):
+            logger.error(
+                f"   Generated SVG content from vectorizer is invalid or truncated XML for {png_path.name}"
+            )
+            return None
 
         logger.debug(f"   Optimizing SVG file...")
-        optimized_svg_content = optimize_svg(standardized_svg_content)
+        optimized_svg_content = optimize_svg(svg_content)
+
+        logger.debug(f"   Flattening SVG groups...")
+        flattened_svg_content = flatten_svg_content(optimized_svg_content)
 
         try:
             temp_svg_path.unlink(missing_ok=True)
         except Exception as e:
             logger.warning(f"   Failed to clean up temp SVG file: {str(e)}")
 
-        return optimized_svg_content
+        return flattened_svg_content
 
     except Exception as e:
         logger.error(f"   Conversion pipeline failed for {png_path.name}: {str(e)}")
@@ -606,7 +753,6 @@ def fetch_floor_urls_from_api(api_endpoint: str) -> list:
         List of floor image URLs, or empty list if request fails
     """
     try:
-
         response = requests.get(api_endpoint, timeout=30)
         response.raise_for_status()
 
@@ -649,10 +795,10 @@ def fetch_vdms_floor_from_cloud_api(base_url: str = None):
     Fetch the list or dictionary of floor image URLs from the API endpoint
 
     Args:
-    base_url: The base URL for the cloud API endpoint
+        base_url: The base URL for the cloud API endpoint
 
     Returns:
-    List or dict of floor image URLs, or empty list if request fails
+        List or dict of floor image URLs, or empty list if request fails
     """
     if not base_url:
         base_url = get_base_url()
@@ -997,9 +1143,10 @@ def process_local_files(filter_filenames: list = None):
                 continue
 
             logger.debug(f"   Starting conversion process...")
-            output_thin = SHM_DIR / f"{png_path.stem}_thinlines.png"
+            orig_img = cv.imread(str(png_path))
+            orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
+
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
-            img, detections = resize_img_det(img, detections)
             img = remove_txt(img, detections)
             temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
 
@@ -1018,6 +1165,20 @@ def process_local_files(filter_filenames: list = None):
                 )
                 continue
 
+            try:
+                svg_root = ET.fromstring(resultant_svg_content)
+                viewbox_str = svg_root.attrib.get("viewBox", "")
+                if viewbox_str:
+                    parts = viewbox_str.split()
+                    vb_w, vb_h = float(parts[2]), float(parts[3])
+                else:
+                    vb_w = float(svg_root.attrib.get("width", orig_w))
+                    vb_h = float(svg_root.attrib.get("height", orig_h))
+                scale_x = vb_w / float(orig_w) if orig_w else 1.0
+                scale_y = vb_h / float(orig_h) if orig_h else 1.0
+            except Exception:
+                scale_x, scale_y = 1.0, 1.0
+
             floor_parts = svg_filename.split("_")
             floor_id = floor_parts[0]
 
@@ -1035,6 +1196,8 @@ def process_local_files(filter_filenames: list = None):
                 paths=paths_string,
                 injector=injector,
                 geo_data=geo_data,
+                scale_x=scale_x,
+                scale_y=scale_y,
             )
             tree.write(
                 os.path.join(OUTPUT_DIR, svg_filename),
@@ -1261,9 +1424,10 @@ def process_filtered_files(filter_filenames: list = None):
                 continue
 
             logger.debug(f"   Starting conversion process...")
-            output_thin = SHM_DIR / f"{png_path.stem}_thinlines.png"
+            orig_img = cv.imread(str(png_path))
+            orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
+
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
-            img, detections = resize_img_det(img, detections)
             img = remove_txt(img, detections)
             temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
 
@@ -1282,6 +1446,20 @@ def process_filtered_files(filter_filenames: list = None):
                 )
                 continue
 
+            try:
+                svg_root = ET.fromstring(resultant_svg_content)
+                viewbox_str = svg_root.attrib.get("viewBox", "")
+                if viewbox_str:
+                    parts = viewbox_str.split()
+                    vb_w, vb_h = float(parts[2]), float(parts[3])
+                else:
+                    vb_w = float(svg_root.attrib.get("width", orig_w))
+                    vb_h = float(svg_root.attrib.get("height", orig_h))
+                scale_x = vb_w / float(orig_w) if orig_w else 1.0
+                scale_y = vb_h / float(orig_h) if orig_h else 1.0
+            except Exception:
+                scale_x, scale_y = 1.0, 1.0
+
             floor_parts = svg_filename.split("_")
             floor_id = floor_parts[0]
 
@@ -1299,6 +1477,8 @@ def process_filtered_files(filter_filenames: list = None):
                 paths=paths_string,
                 injector=injector,
                 geo_data=geo_data,
+                scale_x=scale_x,
+                scale_y=scale_y,
             )
 
             tree.write(
@@ -1526,9 +1706,11 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                 temp_png_path = SHM_DIR / f"{image_id}_temp.png"
                 temp_png_path.write_bytes(png_bytes)
 
+                orig_img = cv.imread(str(temp_png_path))
+                orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
+
                 # Perform OCR & text removal
                 img, detections = recognize_txt(str(temp_png_path), OCR_INSTANCE)
-                img, detections = resize_img_det(img, detections)
                 img = remove_txt(img, detections)
 
                 temp_notext_png = temp_png_path.parent / f"{image_id}_notext.png"
@@ -1549,6 +1731,20 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     )
                     continue
 
+                try:
+                    svg_root = ET.fromstring(resultant_svg_content)
+                    viewbox_str = svg_root.attrib.get("viewBox", "")
+                    if viewbox_str:
+                        parts = viewbox_str.split()
+                        vb_w, vb_h = float(parts[2]), float(parts[3])
+                    else:
+                        vb_w = float(svg_root.attrib.get("width", orig_w))
+                        vb_h = float(svg_root.attrib.get("height", orig_h))
+                    scale_x = vb_w / float(orig_w) if orig_w else 1.0
+                    scale_y = vb_h / float(orig_h) if orig_h else 1.0
+                except Exception:
+                    scale_x, scale_y = 1.0, 1.0
+
                 # Inject elements into SVG
                 floor_id = image_id.split("_")[0]
                 floor_name = data.get_floor(floor_id, vdms_id)
@@ -1566,20 +1762,22 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     paths=paths_string,
                     injector=injector,
                     geo_data=geo_data,
+                    scale_x=scale_x,
+                    scale_y=scale_y,
                 )
 
-                # Save generated SVG to OUTPUT_DIR
+                # Save generated SVG and upload to API
                 svg_bytes = ET.tostring(
                     tree.getroot(), encoding="utf-8", xml_declaration=True
                 )
 
-                upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
-                logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+                # upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
+                # logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
 
-                # output_path = os.path.join(OUTPUT_DIR, f"{floor_id}.svg")
-                # with open(output_path, "wb") as f:
-                #     f.write(svg_bytes)
-                # logger.info(f"[{current_index}/{total_files}] SAVED TO DISK: {output_path}")
+                output_path = os.path.join(OUTPUT_DIR, f"{floor_id}.svg")
+                with open(output_path, "wb") as f:
+                    f.write(svg_bytes)
+                logger.info(f"[{current_index}/{total_files}] SAVED TO DISK: {output_path}")
 
                 processed_count += 1
                 end = time.perf_counter()

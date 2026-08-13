@@ -33,7 +33,7 @@ INK_THRESHOLD = 0.005     # Minimum ratio of ink pixels in a tile to run OCR
 SCORE_THRESHOLD = 0.7     # Minimum confidence score for a valid detection
 IOU_THRESHOLD = 0.3       # Threshold for allowing overlap between two bounding boxes
 RESIZE_LIMIT = 4000       # Resize limit for the final SVG output
-THIN_LINES_THICKNESS = 4  # Thickness for removing thin lines during pre-processing
+THIN_LINES_THICKNESS = 2  # Thickness for removing thin lines during pre-processing
 DESPECKLE_AREA = 15       # Minimum area for removing small noise speckles
 CLUSTER_MAX_SIZE = 2000   # Maximum size for clustered crops to the OCR engine
 CLUSTER_MARGIN = 300      # Margin for clustering nearby text regions
@@ -376,22 +376,24 @@ def resize_img_det(img, detections, max_side=RESIZE_LIMIT):
     return resized_img, scaled_detections
 
 
-def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None):
+def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None, scale_x = 1.0, scale_y = 1.0):
     """
-    Injects text elements into an SVG file based on detected text regions.
+    Injects text elements into an SVG file based on detected text regions, with scale factors matching py-png2svg-ms.
     """
     ET.register_namespace('', "http://www.w3.org/2000/svg")
     ET.register_namespace('sclera', 'https://sclera.app/ns')
     root = ET.fromstring(svg)
     
-    # remove extra vtracer path
-    for child in list(root):
-        tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-        if tag_name == 'path' and 'd' in child.attrib:
-            d = child.attrib['d']
-            if d.startswith('M0,0') or d.startswith('M 0 0'):
-                root.remove(child)
-                break
+    # remove extra vtracer background path if engine is vtracer
+    engine = os.getenv("CONVERSION_ENGINE", "potrace").lower()
+    if engine == "vtracer":
+        for child in list(root):
+            tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            if tag_name == 'path' and 'd' in child.attrib:
+                d = child.attrib['d']
+                if d.startswith('M0,0') or d.startswith('M 0 0'):
+                    root.remove(child)
+                    break
     
     # inject floor metadata
     if injector:
@@ -402,7 +404,10 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
     
     # inject text elements for detected text regions
     if detections:
-        font_size = (np.median([det["font_size"] for det in detections]) if detections else 25) - 5
+        font_size = (
+            np.median([det["font_size"] for det in detections]) if detections else 25
+        )
+        scaled_font_size = (font_size * (scale_x + scale_y) / 2.0) - 5
         
         for det in detections:
             poly = np.array(det["poly"], dtype=np.float64)
@@ -418,12 +423,16 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
             
             angle_deg = np.degrees(np.arctan2(dy, dx))
         
+            cx = cx * scale_x
+            cy = cy * scale_y
+
             attrs = {
                 "x": f"{cx:.1f}", 
                 "y": f"{cy:.1f}",
-                "font-size": f"{font_size}px", 
+                "font-size": f"{scaled_font_size}px", 
                 "fill": "black",
-                "text-anchor": "middle", "dominant-baseline": "central",
+                "text-anchor": "middle",
+                "dominant-baseline": "central",
                 "font-family": "Arial, Helvetica, sans-serif",
             }
             
@@ -434,4 +443,3 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
             text_el.text = det["text"]
             
     return ET.ElementTree(root)
-

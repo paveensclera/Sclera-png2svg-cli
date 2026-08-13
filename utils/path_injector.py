@@ -6,14 +6,18 @@ import uuid
 from datetime import datetime
 
 SVG_NS = "http://www.w3.org/2000/svg"
-ET.register_namespace('sclera', 'https://sclera.app/ns')
+SCLERA_NS = "https://sclera.app/ns"
+ET.register_namespace('sclera', SCLERA_NS)
 
 class PathInjector:
     '''
     function to add floor name and id into the <svg> tag of each floor image
     '''
     def write_into_svg_tag(self, root, id, name, geo_data=None):
-        # required attributes in the <svg> tag
+        # required attributes in the <svg> tag for frontend rendering and scaling
+        root.set("overflow", "visible")
+        root.set("width", "100%")
+        root.set("height", "100%")
         root.set("data-floor-id", str(id) if id is not None else "")
         root.set("data-floor-name", str(name) if name is not None else "Unnamed Floor")
         root.set("data-sclera", "1")
@@ -59,7 +63,7 @@ class PathInjector:
                     name = location.get("name", "Unnamed Location")
                     area_json = location.get("area")
                     is_removed = location.get("isRemoved", False)
-                    location_id = location.get("id")
+                    location_id = location.get("id") or location.get("location_id")
 
                     if is_removed or not area_json:
                         continue
@@ -327,7 +331,6 @@ class PathInjector:
         data_el.text = encoded_base64
         root.insert(0, metadata_el)
 
-
     '''
     function to create new <path> tags from the area column of db
     converted to Python from JavaScript logic of handling generated_data.json
@@ -360,7 +363,7 @@ class PathInjector:
                     name = location.get("name", "Unnamed Location")
                     area_json = location.get("area")
                     is_removed = location.get("isRemoved", False)
-                    location_id = location.get("id")
+                    location_id = location.get("id") or location.get("location_id")
                     zindex = location.get("zindex", 0)
 
                     if is_removed or not area_json:
@@ -451,7 +454,6 @@ class PathInjector:
             for path in new_paths:
                 root.append(path)
 
-
     '''
     function to create new <path> tag from path column of db
     converted to Python from JavaScript logic of handling generated_paths.json
@@ -498,7 +500,6 @@ class PathInjector:
             "skyway": "Skyway"
         }
 
-        # Calculate sizes based on viewport dimensions to match exportUtils.js
         camR = max(width, height) * 0.015
         r = camR * 0.8
         font_size = camR * 0.7
@@ -528,7 +529,6 @@ class PathInjector:
                         color = VT_EXPORT_COLORS.get(vt_type, "#4A90D9")
                         type_label = VT_EXPORT_LABELS.get(vt_type, "VT")
                         
-                        # Create <g> element for vt_marker
                         g_element = ET.Element(f"{{{SVG_NS}}}g", {
                             "data-type": "vt_marker",
                             "data-vt-type": vt_type,
@@ -539,14 +539,12 @@ class PathInjector:
                             "transform": f"translate({x:.2f},{y:.2f})"
                         })
                         
-                        # Circle child
                         ET.SubElement(g_element, f"{{{SVG_NS}}}circle", {
                             "r": f"{r:.2f}",
                             "fill": color,
                             "opacity": "0.75"
                         })
                         
-                        # Text child for label abbreviation
                         txt_el = ET.SubElement(g_element, f"{{{SVG_NS}}}text", {
                             "font-size": f"{font_size:.2f}",
                             "text-anchor": "middle",
@@ -558,7 +556,6 @@ class PathInjector:
                         txt_el.text = type_label
                         new_paths.append(g_element)
                     else:
-                        # Convert relative coordinates to absolute coordinates
                         points = [
                             {
                                 "x": point["relativeLeft"] * width,
@@ -567,13 +564,11 @@ class PathInjector:
                             for point in path_item
                         ]
 
-                        # Generate SVG path data string for polyline
                         path_data = " ".join(
                             f"{'M' if i == 0 else 'L'} {p['x']},{p['y']}"
                             for i, p in enumerate(points)
                         )
 
-                        # Create <path> tag with attributes
                         path_element = ET.Element(f"{{{SVG_NS}}}path", {
                             "d": path_data,
                             "fill": "none",
@@ -591,7 +586,6 @@ class PathInjector:
                     print(f"Error packing marker/polyline in write_path_path_tags: {e}")
                     pass
 
-            # Append all elements to the root
             for path in new_paths:
                 root.append(path)
 

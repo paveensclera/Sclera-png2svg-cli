@@ -28,14 +28,9 @@ load_env() {
 load_env ".env"
 load_env ".env.local"
 
-# API Endpoint & Base URL Configuration
-export MODE="${MODE:-}"
-export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
-
-# Optional: Disable SVGO optimization (uncomment to disable)
-export ENABLE_SVGO="${ENABLE_SVGO:-false}"
+# Optional: Enable/Disable SVGO optimization
+export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
-
 
 echo "PNG to SVG Processing - Isolated Container"
 echo "Input directory: $PNG_INPUT_DIR"
@@ -75,28 +70,13 @@ echo "This is a temporary container that will be removed when done."
 echo "SVGO Optimization: ${ENABLE_SVGO}"
 echo ""
 
-NETWORK_ARG=""
-if [ "$MODE" != "multi-tenant" ]; then
-    NETWORK_ARG="--network sclera_bridge"
-fi
-
 # Run the processing container
 docker run --rm \
-    $NETWORK_ARG \
-    --cpu-shares 128 \
-    --cpus "4.0" \
-    --blkio-weight 100 \
-    --memory-reservation "512m" \
-    --oom-score-adj 1000 \
-    --memory "4g" \
-    --shm-size 1g \
     --name "png-processor-$(date +%s)" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
-    -e BASE_URL="$BASE_URL" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
-    -e VDMS_FILTER="$VDMS_FILTER" \
     "$IMAGE_NAME" "$@"
 
 # Check results

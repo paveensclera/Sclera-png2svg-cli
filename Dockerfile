@@ -37,10 +37,10 @@ RUN cargo install vtracer && \
   chmod 755 /root/.cargo/bin/vtracer && \
   cp /root/.cargo/bin/vtracer /usr/local/bin/vtracer && \
   chmod 755 /usr/local/bin/vtracer
+
 # NOTE: Install SVGO v3+ for modern SVG optimization
 # Version 3.0.2 uses a config-file based approach (see svgo.config.js)
 # This is a breaking change from v1/v2 which used --enable= flags
-
 RUN npm install -g svgo@3.0.2
 
 # NOTE: Install svgcleaner for additional optimization
@@ -103,6 +103,7 @@ COPY svgo.config.js /app/
 # Copy your processing script
 COPY main.py /app/
 COPY utils /app/utils
+
 # Create non-root user for security and grant ownership of app, sclera, and rapidocr packages
 RUN groupadd -r processor && useradd -r -g processor processor \
   && chown -R processor:processor /app /home/sclera /usr/local/lib/python3.11/site-packages/rapidocr
@@ -111,4 +112,3 @@ USER processor
 
 # NOTE: Default command runs the processing script
 ENTRYPOINT ["python", "main.py"]
-
