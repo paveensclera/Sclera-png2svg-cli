@@ -6,9 +6,40 @@ PNG_INPUT_DIR="/home/sclera/images/png_floors"
 SVG_OUTPUT_DIR="/home/sclera/images/svg_floors"
 IMAGE_NAME="png-processor:latest"
 
+# Load environment files if they exist (single source of truth)
+load_env() {
+    local env_file="$1"
+    if [ -f "$env_file" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line//[[:space:]]/}" ]] && continue
+            if [[ "$line" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+                key="${BASH_REMATCH[1]}"
+                val="${BASH_REMATCH[2]}"
+                val="${val#\"}"
+                val="${val%\"}"
+                val="${val#\'}"
+                val="${val%\'}"
+                export "$key"="$val"
+            fi
+        done < "$env_file"
+    fi
+}
+load_env ".env"
+load_env ".env.local"
+
+# API Endpoint & Base URL Configuration
+export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
+
+# Optional: Enable/Disable SVGO optimization
+export ENABLE_SVGO="${ENABLE_SVGO:-true}"
+export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
+
+
 echo "PNG to SVG Processing - Isolated Container"
 echo "Input directory: $PNG_INPUT_DIR"
 echo "Output directory: $SVG_OUTPUT_DIR"
+echo "Conversion engine: $CONVERSION_ENGINE"
 echo ""
 
 # Create directories if they don't exist
@@ -40,6 +71,7 @@ echo ""
 
 echo "Starting PNG processing container..."
 echo "This is a temporary container that will be removed when done."
+echo "SVGO Optimization: ${ENABLE_SVGO}"
 echo ""
 
 # Run the processing container
@@ -47,7 +79,10 @@ docker run --rm \
     --name "png-processor-$(date +%s)" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
-    "$IMAGE_NAME"
+    -e ENABLE_SVGO="$ENABLE_SVGO" \
+    -e BASE_URL="$BASE_URL" \
+    -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+    "$IMAGE_NAME" "$@"
 
 # Check results
 if [ $? -eq 0 ]; then
