@@ -8,8 +8,8 @@
  */
 
 module.exports = {
-  // Enable multiple optimization passes for better compression
-  multipass: true,
+  // Disable multipass to match single-pass SVGO optimization in py-png2svg-ms
+  multipass: false,
   
   // Set precision for number rounding (lower = more compression, less precision)
   js2svg: {
@@ -33,19 +33,15 @@ module.exports = {
             minify: true
           },
           
-          // Configure path data conversion for better compression
+          // Preserve high floating-point precision for sharp CAD/floor-plan vectors
           convertPathData: {
-            floatPrecision: 2,
-            transformPrecision: 5,
-            makeArcs: {
-              threshold: 2.5,
-              tolerance: 0.5
-            }
+            floatPrecision: 5,
+            transformPrecision: 5
           },
           
-          // Clean up numeric values with precision
+          // Clean up numeric values without truncating vector precision
           cleanupNumericValues: {
-            floatPrecision: 2
+            floatPrecision: 5
           },
           
           // Convert colors to shorter formats
@@ -55,11 +51,6 @@ module.exports = {
             rgb2hex: true,
             shorthex: true,
             shortname: true
-          },
-          
-          // Merge paths where possible for better compression
-          mergePaths: {
-            force: true
           }
         }
       }

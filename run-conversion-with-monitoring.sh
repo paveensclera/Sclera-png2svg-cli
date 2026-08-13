@@ -32,7 +32,7 @@ IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
 
 export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
-export ENABLE_SVGO="${ENABLE_SVGO:-false}"
+export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 
 

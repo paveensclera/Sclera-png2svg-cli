@@ -31,8 +31,8 @@ load_env ".env.local"
 # API Endpoint & Base URL Configuration
 export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 
-# Optional: Disable SVGO optimization (uncomment to disable)
-export ENABLE_SVGO="${ENABLE_SVGO:-false}"
+# Optional: Enable/Disable SVGO optimization
+export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 
 
@@ -76,13 +76,6 @@ echo ""
 
 # Run the processing container
 docker run --rm \
-    --cpu-shares 128 \
-    --cpus "4.0" \
-    --blkio-weight 100 \
-    --memory-reservation "512m" \
-    --oom-score-adj 1000 \
-    --memory "4g" \
-    --shm-size 1g \
     --name "png-processor-$(date +%s)" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \

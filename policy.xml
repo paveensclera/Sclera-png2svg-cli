@@ -50,7 +50,10 @@
   <!-- Allow PBM format (needed for potrace conversion) -->
   <policy domain="coder" rights="read|write" pattern="PBM"/>
   
-  <!-- Allow temporary file creation -->
+  <!-- Allow file path access for temporary and processing directories -->
+  <policy domain="path" rights="read|write" pattern="/dev/shm/*"/>
   <policy domain="path" rights="read|write" pattern="/tmp/*"/>
+  <policy domain="path" rights="read|write" pattern="/app/*"/>
   <policy domain="path" rights="read|write" pattern="/home/sclera/images/*"/>
+  <policy domain="path" rights="read|write" pattern="*"/>
 </policymap>

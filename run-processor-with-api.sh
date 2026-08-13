@@ -31,8 +31,8 @@ load_env ".env"
 export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 
-# Optional: Disable SVGO optimization (uncomment to disable)
-export ENABLE_SVGO="${ENABLE_SVGO:-false}"
+# Optional: Enable/Disable SVGO optimization
+export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 
 

@@ -13,7 +13,11 @@ class PathInjector:
     function to add floor name and id into the <svg> tag of each floor image
     '''
     def write_into_svg_tag(self, root, id, name, geo_data=None):
-        # required attributes in the <svg> tag
+        # required attributes in the <svg> tag matching py-png2svg-ms
+        root.set("overflow", "visible")
+        root.set("width", "100%")
+        root.set("height", "100%")
+        # till here
         root.set("data-floor-id", str(id) if id is not None else "")
         root.set("data-floor-name", str(name) if name is not None else "Unnamed Floor")
         root.set("data-sclera", "1")
