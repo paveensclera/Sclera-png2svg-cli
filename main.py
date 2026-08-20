@@ -885,7 +885,8 @@ def process_local_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
+            engine = CONVERSION_ENGINE.lower()
+            img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=engine)
             img = remove_txt(img, detections)
             temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
 
@@ -904,19 +905,13 @@ def process_local_files(filter_filenames: list = None):
 
             try:
                 svg_root = ET.fromstring(resultant_svg_content)
-                viewbox_str = svg_root.attrib.get("viewBox", "")
-                if viewbox_str:
-                    parts = viewbox_str.split()
-                    vb_w, vb_h = float(parts[2]), float(parts[3])
-                else:
-                    vb_w = float(svg_root.attrib.get("width", orig_w))
-                    vb_h = float(svg_root.attrib.get("height", orig_h))
+                vb_w, vb_h = injector.get_dimensions(svg_root, float(orig_w), float(orig_h))
                 scale_x = vb_w / float(orig_w) if orig_w else 1.0
                 scale_y = vb_h / float(orig_h) if orig_h else 1.0
             except Exception:
                 scale_x, scale_y = 1.0, 1.0
 
-            floor_parts = svg_filename.split("_")
+            floor_parts = png_path.stem.split("_")
             floor_id = floor_parts[0]
 
             floor_name = data.get_floor(floor_id)
@@ -934,7 +929,10 @@ def process_local_files(filter_filenames: list = None):
                 injector=injector,
                 geo_data=geo_data,
                 scale_x=scale_x,
-                scale_y=scale_y
+                scale_y=scale_y,
+                orig_w=orig_w,
+                orig_h=orig_h,
+                engine=engine
             )
             tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
           
@@ -1136,7 +1134,8 @@ def process_filtered_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
+            engine = CONVERSION_ENGINE.lower()
+            img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=engine)
             img = remove_txt(img, detections)
             temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
 
@@ -1155,19 +1154,13 @@ def process_filtered_files(filter_filenames: list = None):
 
             try:
                 svg_root = ET.fromstring(resultant_svg_content)
-                viewbox_str = svg_root.attrib.get("viewBox", "")
-                if viewbox_str:
-                    parts = viewbox_str.split()
-                    vb_w, vb_h = float(parts[2]), float(parts[3])
-                else:
-                    vb_w = float(svg_root.attrib.get("width", orig_w))
-                    vb_h = float(svg_root.attrib.get("height", orig_h))
+                vb_w, vb_h = injector.get_dimensions(svg_root, float(orig_w), float(orig_h))
                 scale_x = vb_w / float(orig_w) if orig_w else 1.0
                 scale_y = vb_h / float(orig_h) if orig_h else 1.0
             except Exception:
                 scale_x, scale_y = 1.0, 1.0
 
-            floor_parts = svg_filename.split("_")
+            floor_parts = png_path.stem.split("_")
             floor_id = floor_parts[0]
 
             floor_name = data.get_floor(floor_id)
@@ -1185,7 +1178,10 @@ def process_filtered_files(filter_filenames: list = None):
                 injector=injector,
                 geo_data=geo_data,
                 scale_x=scale_x,
-                scale_y=scale_y
+                scale_y=scale_y,
+                orig_w=orig_w,
+                orig_h=orig_h,
+                engine=engine
             )
 
             tree.write(os.path.join(OUTPUT_DIR, svg_filename), encoding="utf-8", xml_declaration=True)
@@ -1193,7 +1189,7 @@ def process_filtered_files(filter_filenames: list = None):
             # Upload SVG to API
             svg_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
             upload_response = data.upload_floor(floor_id, svg_bytes)
-            print("Upload response:", upload_response)
+            logger.debug(f"Upload response: {upload_response}")
             
             processed_count += 1
             final_size = len(resultant_svg_content)

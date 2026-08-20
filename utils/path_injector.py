@@ -12,7 +12,43 @@ class PathInjector:
     '''
     function to add floor name and id into the <svg> tag of each floor image
     '''
-    def write_into_svg_tag(self, root, id, name, geo_data=None):
+    def get_dimensions(self, root, fallback_w=2000.0, fallback_h=2000.0):
+        viewbox = root.attrib.get("viewBox")
+        if viewbox:
+            try:
+                parts = [float(p) for p in viewbox.replace(",", " ").split() if p.strip()]
+                if len(parts) >= 4 and parts[2] > 0 and parts[3] > 0:
+                    return float(parts[2]), float(parts[3])
+            except Exception:
+                pass
+
+        def parse_dim(val, fallback):
+            if not val:
+                return fallback
+            val_str = str(val).strip()
+            if val_str.endswith("%"):
+                return fallback
+            import re
+            m = re.match(r"^([\d.]+)", val_str)
+            if m:
+                try:
+                    n = float(m.group(1))
+                    if n > 0:
+                        return n
+                except Exception:
+                    pass
+            return fallback
+
+        w = parse_dim(root.attrib.get("width"), fallback_w)
+        h = parse_dim(root.attrib.get("height"), fallback_h)
+        return float(w), float(h)
+
+    def write_into_svg_tag(self, root, id, name, geo_data=None, default_w=2000.0, default_h=2000.0):
+        # Ensure viewBox exists before setting width/height to 100%
+        if not root.attrib.get("viewBox"):
+            width, height = self.get_dimensions(root, default_w, default_h)
+            root.set("viewBox", f"0 0 {width} {height}")
+
         # required attributes in the <svg> tag matching py-png2svg-ms
         root.set("overflow", "visible")
         root.set("width", "100%")
@@ -34,18 +70,7 @@ class PathInjector:
                 root.set("data-rotation-angle", str(geo_data["rotationAngle"]))
 
     def inject_sclera_data(self, root, floor_svg_text, floor_locations, paths_string, geo_data=None):
-        viewbox = root.attrib.get("viewBox")
-        if viewbox:
-            parts = viewbox.split()
-            if len(parts) == 4:
-                width = float(parts[2])
-                height = float(parts[3])
-            else:
-                width = float(root.attrib.get("width", 2000))
-                height = float(root.attrib.get("height", 2000))
-        else:
-            width = float(root.attrib.get("width", 2000))
-            height = float(root.attrib.get("height", 2000))
+        width, height = self.get_dimensions(root)
 
         edit_shapes = []
         detected_areas = []
@@ -338,16 +363,8 @@ class PathInjector:
     (refer React-Pathfinder)
     '''
     def write_location_path_tags(self, root, floor_locations):
-        viewbox = root.attrib.get("viewBox")
-        if viewbox:
-            _, _, width, height = map(float, viewbox.split())
-        else:
-            width = float(root.attrib.get("width", 0))
-            height = float(root.attrib.get("height", 0))
-
-            if width == 0 or height == 0:
-                raise ValueError("SVG missing both viewBox and width/height")
-
+        width, height = self.get_dimensions(root)
+        if not root.attrib.get("viewBox"):
             root.set("viewBox", f"0 0 {width} {height}")
 
         new_paths = []
@@ -471,18 +488,8 @@ class PathInjector:
             print(f"Error parsing paths JSON: {e}")
             return
         
-        # Extract viewBox dimensions
-        viewbox = root.attrib.get("viewBox")
-
-        if viewbox:
-            _, _, width, height = map(float, viewbox.split())
-        else:
-            width = float(root.attrib.get("width", 0))
-            height = float(root.attrib.get("height", 0))
-
-            if width == 0 or height == 0:
-                raise ValueError("SVG missing both viewBox and width/height")
-
+        width, height = self.get_dimensions(root)
+        if not root.attrib.get("viewBox"):
             root.set("viewBox", f"0 0 {width} {height}")
 
         new_paths = []

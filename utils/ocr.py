@@ -234,8 +234,9 @@ def init_ocr_engine():
 #         limit_side_len=side_len
 #     )
 
-def recognize_txt(image_path, ocr):
+def recognize_txt(image_path, ocr, engine=None):
     """Pre-processes image and runs RapidOCR in overlapping grids."""
+    engine = (engine or os.getenv("CONVERSION_ENGINE", "potrace")).lower()
     img, w, h = load_image(image_path)
     process_img = remove_noise(cv.erode(remove_thin_lines(binarize_image(img), thickness=2), np.ones((2, 2), np.uint8), iterations=1))
     
@@ -265,7 +266,11 @@ def recognize_txt(image_path, ocr):
                 skipped_count += 1
                 continue
 
-            res = ocr(process_img[ymin:ymax, xmin:xmax])
+            if engine == "vtracer":
+                res = ocr(img[ymin:ymax, xmin:xmax])
+            else:
+                # Previous code for potrace
+                res = ocr(process_img[ymin:ymax, xmin:xmax])
             tile_count += 1
 
             if res and res.boxes is not None and len(res.txts) > 0:
@@ -376,16 +381,16 @@ def resize_img_det(img, detections, max_side=RESIZE_LIMIT):
     return resized_img, scaled_detections
 
 
-def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None, scale_x = 1.0, scale_y = 1.0):
+def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None, scale_x = 1.0, scale_y = 1.0, orig_w = 2000, orig_h = 2000, engine = None):
     """
     Injects text elements into an SVG file based on detected text regions, with scale factors matching py-png2svg-ms.
     """
+    engine = (engine or os.getenv("CONVERSION_ENGINE", "potrace")).lower()
     ET.register_namespace('', "http://www.w3.org/2000/svg")
     ET.register_namespace('sclera', 'https://sclera.app/ns')
     root = ET.fromstring(svg)
     
     # remove extra vtracer background path if engine is vtracer
-    engine = os.getenv("CONVERSION_ENGINE", "potrace").lower()
     if engine == "vtracer":
         for child in list(root):
             tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
@@ -397,7 +402,7 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
     
     # inject floor metadata
     if injector:
-        injector.write_into_svg_tag(root, floor_id, floor_name, geo_data)
+        injector.write_into_svg_tag(root, floor_id, floor_name, geo_data, orig_w, orig_h)
         injector.write_location_path_tags(root, floor_locations)
         injector.write_path_path_tags(root, paths)
         injector.inject_sclera_data(root, raw_svg_content, floor_locations, paths, geo_data)
