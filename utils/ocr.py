@@ -391,14 +391,14 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
     root = ET.fromstring(svg)
     
     # remove extra vtracer background path if engine is vtracer
-    if engine == "vtracer":
-        for child in list(root):
-            tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-            if tag_name == 'path' and 'd' in child.attrib:
-                d = child.attrib['d']
-                if d.startswith('M0,0') or d.startswith('M 0 0'):
-                    root.remove(child)
-                    break
+    # if engine == "vtracer":
+    #     for child in list(root):
+    #         tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+    #         if tag_name == 'path' and 'd' in child.attrib:
+    #             d = child.attrib['d']
+    #             if d.startswith('M0,0') or d.startswith('M 0 0'):
+    #                 root.remove(child)
+    #                 break
     
     # inject floor metadata
     if injector:

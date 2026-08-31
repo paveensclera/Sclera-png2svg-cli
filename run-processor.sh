@@ -34,12 +34,14 @@ export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 # Optional: Enable/Disable SVGO optimization
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
+export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
 
 
 echo "PNG to SVG Processing - Isolated Container"
 echo "Input directory: $PNG_INPUT_DIR"
 echo "Output directory: $SVG_OUTPUT_DIR"
 echo "Conversion engine: $CONVERSION_ENGINE"
+echo "Auto-detect engine: $AUTO_DETECT_ENGINE"
 echo ""
 
 # Create directories if they don't exist
@@ -82,6 +84,7 @@ docker run --rm \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
     -e BASE_URL="$BASE_URL" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
+    -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
     "$IMAGE_NAME" "$@"
 
 # Check results

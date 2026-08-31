@@ -19,6 +19,7 @@ from utils.ocr import (
 )
 import xml.etree.ElementTree as ET
 import cv2 as cv
+from utils.image_utils import is_rgb_image
 # Configure logging
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.DEBUG)  # Capture all logs down to DEBUG
@@ -128,6 +129,25 @@ OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/home/sclera/images/svg_floors"))
 CONVERSION_ENGINE = os.getenv('CONVERSION_ENGINE', 'potrace').lower()
 if CONVERSION_ENGINE not in ['potrace', 'vtracer']:
     CONVERSION_ENGINE = 'potrace'
+
+AUTO_DETECT_ENGINE = os.getenv('AUTO_DETECT_ENGINE', os.getenv('AUTO_DETECT', 'false')).lower() in ('true', '1', 'yes')
+
+
+def determine_engine(img=None, default_engine: str = None) -> str:
+    """
+    Determine whether to use Potrace or VTracer engine.
+    If AUTO_DETECT_ENGINE is enabled and img is provided, uses is_rgb_image:
+      - RGB / color image -> 'vtracer'
+      - Grayscale / monochrome image -> 'potrace'
+    Otherwise, returns default_engine or CONVERSION_ENGINE.
+    """
+    base_engine = (default_engine or CONVERSION_ENGINE).lower()
+    if AUTO_DETECT_ENGINE and img is not None:
+        is_rgb = is_rgb_image(img)
+        engine = "vtracer" if is_rgb else "potrace"
+        logger.info(f"   Auto-detected engine: {engine.upper()} (color={'RGB' if is_rgb else 'Grayscale'})")
+        return engine
+    return base_engine
 
 TEMP_DIR = Path("/tmp/floor_map_processing")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -518,9 +538,10 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path, image_info: dict
             logger.warning(f"   Failed to delete PBM file: {str(e)}")
 
 
-def convert_png_to_svg_local(png_path: Path) -> str:
+def convert_png_to_svg_local(png_path: Path, engine: str | None = None) -> str:
     """Convert PNG to SVG using either Potrace (with adaptive preprocessing) or VTracer based on configuration"""
-    logger.debug(f"CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
+    selected_engine = (engine or CONVERSION_ENGINE).lower()
+    logger.debug(f"CONVERTING: {png_path.name} (Engine: {selected_engine})")
     logger.debug(f"   Input:  {png_path}")
 
     temp_filename = png_path.stem + "_temp"
@@ -529,7 +550,7 @@ def convert_png_to_svg_local(png_path: Path) -> str:
     try:
         image_info = None
 
-        if CONVERSION_ENGINE == "vtracer":
+        if selected_engine == "vtracer":
             logger.debug(f"   Running VTracer for conversion...")
             success = run_vtracer_conversion(png_path, temp_svg_path)
         else:
@@ -549,7 +570,8 @@ def convert_png_to_svg_local(png_path: Path) -> str:
             return None
 
         logger.debug(f"   Optimizing SVG file...")
-        optimized_svg_content = optimize_svg(svg_content)
+        standardized_svg_content = standardize_svg_for_frontend(svg_content)
+        optimized_svg_content = optimize_svg(standardized_svg_content)
 
         logger.debug(f"   Flattening SVG groups...")
         flattened_svg_content = flatten_svg_content(optimized_svg_content)
@@ -577,8 +599,11 @@ def check_dependencies():
         "svgcleaner": ["svgcleaner", "--version"],
     }
     
-    if CONVERSION_ENGINE == "potrace":
+    if AUTO_DETECT_ENGINE or CONVERSION_ENGINE == "potrace":
         tools["Potrace"] = ["potrace", "--version"]
+    
+    if AUTO_DETECT_ENGINE or CONVERSION_ENGINE == "vtracer":
+        tools["VTracer"] = ["vtracer", "--help"]
     
     if ENABLE_SVGO:
         tools["svgo"] = ["svgo", "--version"]
@@ -777,8 +802,11 @@ def process_local_files(filter_filenames: list = None):
     failures = []
     
     if not check_dependencies():
-        engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
-        deps = f" {engine_name}, and svgcleaner"
+        if AUTO_DETECT_ENGINE:
+            deps = " Potrace, VTracer, and svgcleaner"
+        else:
+            engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
+            deps = f" {engine_name}, and svgcleaner"
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"Missing required dependencies. Please install {deps}")
@@ -885,14 +913,14 @@ def process_local_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            engine = CONVERSION_ENGINE.lower()
+            engine = determine_engine(orig_img)
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=engine)
             img = remove_txt(img, detections)
             temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
-            resultant_svg_content = convert_png_to_svg_local(temp_png)
+            resultant_svg_content = convert_png_to_svg_local(temp_png, engine=engine)
             
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -1026,8 +1054,11 @@ def process_filtered_files(filter_filenames: list = None):
     failures = []
     
     if not check_dependencies():
-        engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
-        deps = f" {engine_name}, and svgcleaner"
+        if AUTO_DETECT_ENGINE:
+            deps = " Potrace, VTracer, and svgcleaner"
+        else:
+            engine_name = "Potrace" if CONVERSION_ENGINE == "potrace" else "VTracer"
+            deps = f" {engine_name}, and svgcleaner"
         if ENABLE_SVGO:
             deps += ", and svgo"
         logger.error(f"Missing required dependencies. Please install {deps}")
@@ -1134,14 +1165,14 @@ def process_filtered_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            engine = CONVERSION_ENGINE.lower()
+            engine = determine_engine(orig_img)
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=engine)
             img = remove_txt(img, detections)
             temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
-            resultant_svg_content = convert_png_to_svg_local(temp_png)
+            resultant_svg_content = convert_png_to_svg_local(temp_png, engine=engine)
             
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -1296,7 +1327,7 @@ def process_floors_from_api(api_endpoint: str):
 
 def parse_arguments_and_update_config():
     """Parse CLI arguments and update configuration globals"""
-    global CONVERSION_ENGINE, ENABLE_SVGO, INPUT_DIR, OUTPUT_DIR
+    global CONVERSION_ENGINE, AUTO_DETECT_ENGINE, ENABLE_SVGO, INPUT_DIR, OUTPUT_DIR
     
     import argparse
     parser = argparse.ArgumentParser(description="Floor Map Processing Service - PNG to SVG Converter")
@@ -1305,6 +1336,13 @@ def parse_arguments_and_update_config():
         choices=["potrace", "vtracer"],
         default=CONVERSION_ENGINE,
         help="Conversion engine to use (default: potrace or CONVERSION_ENGINE env var)"
+    )
+    parser.add_argument(
+        "--auto-detect", "--auto-detect-engine", "-a",
+        dest="auto_detect",
+        action=argparse.BooleanOptionalAction,
+        default=AUTO_DETECT_ENGINE,
+        help="Auto-detect conversion engine per image based on RGB color content (potrace for grayscale, vtracer for RGB)"
     )
     parser.add_argument(
         "--disable-svgo",
@@ -1328,6 +1366,7 @@ def parse_arguments_and_update_config():
     args, unknown = parser.parse_known_args()
     
     CONVERSION_ENGINE = args.engine
+    AUTO_DETECT_ENGINE = bool(args.auto_detect)
     ENABLE_SVGO = not args.disable_svgo
     INPUT_DIR = Path(args.input_dir)
     OUTPUT_DIR = Path(args.output_dir)
@@ -1344,7 +1383,8 @@ if __name__ == "__main__":
     print("="*80)
     logger.info("Starting PNG to SVG conversion...")
     logger.info(f"Python script: {__file__}")
-    logger.info(f"Conversion Engine: {CONVERSION_ENGINE.upper()}")
+    logger.info(f"Conversion Engine: {CONVERSION_ENGINE.upper()}{' (Default - Auto-detect enabled)' if AUTO_DETECT_ENGINE else ''}")
+    logger.info(f"Auto-detect Engine: {'Enabled' if AUTO_DETECT_ENGINE else 'Disabled'}")
     
     if not INPUT_DIR.exists():
         logger.error(f"Input directory does not exist: {INPUT_DIR}")
