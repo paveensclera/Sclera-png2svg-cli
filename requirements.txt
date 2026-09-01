@@ -21,7 +21,7 @@ pillow==12.2.0
 protobuf==7.35.0
 pyclipper==1.4.0
 pyyaml==6.0.2
-rapidocr==3.8.1
+rapidocr==3.9.2
 requests==2.34.2
 shapely==2.1.2
 six==1.17.0

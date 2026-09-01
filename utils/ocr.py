@@ -200,32 +200,32 @@ def estimate_optimal_tile_params(binary):
 
 def init_ocr_engine():
     """Initializes the RapidOCR engine with specified parameters."""
-    ocr = RapidOCR(params={
-        "Global.text_score": SCORE_THRESHOLD,
-        #"Global.max_side_len": 4096,
-        "Det.ocr_version": OCRVersion.PPOCRV5,
-        "Det.engine_type": EngineType.ONNXRUNTIME,
-        "Det.model_type": ModelType.MOBILE,
-        "Det.lang_type": LangDet.CH,
-        #"Det.limit_side_len": 4096,
-        "Det.limit_type": "max",
-        "Det.box_thresh": 0.3,
-        "Det.unclip_ratio": 1.8,
-        
-        "Cls.ocr_version": OCRVersion.PPOCRV5,
-        "Cls.engine_type": EngineType.ONNXRUNTIME,
-        "Cls.model_type": ModelType.MOBILE,
-        "Cls.lang_type": LangCls.CH,
-        
-        "Rec.ocr_version": OCRVersion.PPOCRV5,
-        "Rec.engine_type": EngineType.ONNXRUNTIME,
-        "Rec.model_type": ModelType.MOBILE,
-        "Rec.lang_type": LangRec.EN,
-        
-        "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
-        "EngineConfig.onnxruntime.intra_op_num_threads": CPU_THREADS,
-        "EngineConfig.onnxruntime.inter_op_num_threads": 1
-    })
+    ocr = RapidOCR(
+        params={
+            "Global.text_score": SCORE_THRESHOLD,
+            # "Global.max_side_len": 4096,
+            "Det.ocr_version": OCRVersion.PPOCRV6,
+            "Det.engine_type": EngineType.ONNXRUNTIME,
+            "Det.model_type": ModelType.SMALL,
+            # "Det.lang_type": LangDet.CH,
+            # "Det.limit_side_len": 4096,
+            "Det.limit_type": "max",
+            "Det.box_thresh": 0.3,
+            "Det.unclip_ratio": 1.8,
+            # "Cls.ocr_version": OCRVersion.PPOCRV6,
+            "Cls.engine_type": EngineType.ONNXRUNTIME,
+            "Cls.model_type": ModelType.MOBILE,
+            # "Cls.lang_type": LangCls.CH,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
+            "Rec.engine_type": EngineType.ONNXRUNTIME,
+            "Rec.model_type": ModelType.SMALL,
+            # "Rec.lang_type": LangRec.EN,
+            "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
+            "EngineConfig.onnxruntime.intra_op_num_threads": CPU_THREADS,
+            "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+        }
+    )
+    logger.info(f"[OCR] RapidOCR engine initialized | threads={CPU_THREADS}")
     return ocr
 
 # def update_side_len(ocr, side_len):

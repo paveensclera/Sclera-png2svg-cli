@@ -20,6 +20,14 @@ from utils.ocr import (
 import xml.etree.ElementTree as ET
 import cv2 as cv
 from utils.image_utils import is_rgb_image
+from utils.tiler import (
+    vectorize_image_tiled,
+    bake_svg_transforms,
+    DEFAULT_TILE_SIZE,
+    get_image_dimensions,
+    translate_element_coordinates,
+    parse_transform_translate,
+)
 # Configure logging
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.DEBUG)  # Capture all logs down to DEBUG
@@ -265,27 +273,94 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
         logger.error(f"     SVG standardization failed: {str(e)}")
         return svg_content
 
-def flatten_svg_content(svg_content: str) -> str:
-    """Flatten SVG by removing <g> tags and propagating attributes to children."""
+def flatten_svg_content(svg_content: str, engine: str = "potrace") -> str:
+    """Flatten SVG by converting all <g> tags into direct child <path> and shape elements, baking transforms and attributes."""
+    if not svg_content or "<svg" not in svg_content:
+        return svg_content
+
+    engine_str = (engine or "potrace").lower()
+
     try:
         root = ET.fromstring(svg_content)
+        if "xmlns" in root.attrib:
+            del root.attrib["xmlns"]
 
+        # 1. Bake transforms on root-level children
+        for child in list(root):
+            translate_element_coordinates(child, 0.0, 0.0)
+
+        # 2. Recursively convert all <g> tags into flat child paths/shapes
         def recurse_and_flatten(parent, group):
+            group_transform = group.get("transform")
+            gtx, gty = parse_transform_translate(group_transform) if group_transform else (0.0, 0.0)
+
             for child in list(group):
+                if gtx != 0 or gty != 0:
+                    translate_element_coordinates(child, gtx, gty)
+
                 for attr, value in group.attrib.items():
-                    if attr not in child.attrib:
+                    if attr not in ("transform", "id") and attr not in child.attrib:
                         child.attrib[attr] = value
-                parent.append(child)
-                if child.tag == '{http://www.w3.org/2000/svg}g' or child.tag == 'g':
+
+                tag_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag_local == "g":
                     recurse_and_flatten(parent, child)
+                else:
+                    if tag_local in ("path", "polygon", "rect", "circle", "ellipse", "line", "polyline"):
+                        if not child.get("fill"):
+                            fill_val = group.get("fill")
+                            if fill_val:
+                                child.set("fill", fill_val)
+                            elif engine_str == "potrace":
+                                child.set("fill", "#000000")
+                    parent.append(child)
+
             parent.remove(group)
 
+        SEMANTIC_GROUP_IDS = {"walls-layer"}
+        SEMANTIC_DATA_TYPES = {"vt_marker", "route"}
+
         for elem in list(root):
-            if elem.tag == '{http://www.w3.org/2000/svg}g' or elem.tag == 'g':
+            tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag_local == "g":
+                elem_id = elem.get("id", "")
+                elem_type = elem.get("data-type", "")
+                if elem_id in SEMANTIC_GROUP_IDS or elem_type in SEMANTIC_DATA_TYPES or elem.get("data-camera") or elem.get("data-wifi"):
+                    # Preserve semantic container, but ensure explicit fills on its children
+                    for child in elem:
+                        ctag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                        if ctag in ("path", "polygon", "rect", "circle", "ellipse", "polyline") and not child.get("fill"):
+                            child.set("fill", "none")
+                    continue
                 recurse_and_flatten(root, elem)
 
+        # 3. For VTracer, filter out near-white background paths (RGB >= 245) which act as opaque white sheets covering lines
+        if engine_str == "vtracer":
+            for elem in list(root):
+                tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                if tag_local == "path":
+                    fill_val = (elem.get("fill") or "").strip().lower()
+                    if fill_val.startswith("#"):
+                        h = fill_val.lstrip("#")
+                        if len(h) == 3:
+                            h = "".join([c * 2 for c in h])
+                        if len(h) == 6:
+                            try:
+                                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                                if r >= 245 and g >= 245 and b >= 245:
+                                    root.remove(elem)
+                            except ValueError:
+                                pass
+
+        # 4. Ensure every shape at root has explicit fill
+        for elem in list(root):
+            tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag_local in ("path", "polygon", "rect", "circle", "ellipse", "polyline"):
+                if not elem.get("fill"):
+                    elem.set("fill", "#000000")
+
         ET.register_namespace("", "http://www.w3.org/2000/svg")
-        return ET.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
+        return ET.tostring(root, encoding="utf-8").decode("utf-8")
     except Exception as e:
         logger.warning(f"     SVG flattening failed, using unflattened SVG: {str(e)}")
         return svg_content
@@ -401,16 +476,45 @@ def optimize_svg(svg_content: str) -> str:
         logger.error(f"SVG optimization failed: {str(e)}")
         return svg_content
 
-def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
-    """Run ImageMagick normalization and VTracer to convert PNG to SVG"""
+def run_vtracer_conversion(png_path: Path, temp_svg_path: Path, image_info: dict | None = None) -> bool:
+    """Run ImageMagick normalization and VTracer (or Tiled VTracer for large images) to convert PNG to SVG"""
     import vtracer
-    
+    import shutil
+
     temp_filename = png_path.stem + "_temp"
     normalized_png = TEMP_DIR / f"{temp_filename}_normalized.png"
-    
+
     try:
+        width = (image_info or {}).get("width")
+        height = (image_info or {}).get("height")
+        if not width or not height:
+            try:
+                width, height = get_image_dimensions(png_path)
+            except Exception:
+                width, height = 0, 0
+
+        tile_size = int(os.getenv("MAX_TILE_DIM", os.getenv("TILE_SIZE", str(DEFAULT_TILE_SIZE))))
+
+        if max(width, height) > tile_size:
+            logger.info(
+                f"   Image dimensions ({width}x{height} px) exceed {tile_size}px. "
+                f"Dispatching to Tiled Grid Vectorization."
+            )
+            vectorize_image_tiled(
+                png_path,
+                temp_svg_path,
+                tile_size=tile_size,
+                temp_dir=TEMP_DIR,
+            )
+            return True
+
+        logger.info(
+            f"   Image dimensions ({width}x{height} px) <= {tile_size}px. "
+            f"Running single-pass VTracer."
+        )
+        im_cmd = "magick" if shutil.which("magick") else "convert"
         normalize_cmd = [
-            "magick", str(png_path),
+            im_cmd, str(png_path),
             "-depth", "8",
             "-background", "white",
             "-alpha", "off",
@@ -431,21 +535,22 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
         if not normalized_png.exists():
             logger.error("   Normalized PNG was not created")
             return False
-        
+
         vtracer.convert_image_to_svg_py(
             str(normalized_png),
             str(temp_svg_path),
             mode="polygon",
             colormode="color",
-            hierarchical="stacked",
+            hierarchical="cutout",
             filter_speckle=4,
             color_precision=6,
             layer_difference=8,
             corner_threshold=60,
-            length_threshold=4.0, 
+            length_threshold=4.0,
             splice_threshold=45
         )
-        
+        bake_svg_transforms(temp_svg_path)
+
         return True
 
     except Exception as e:
@@ -463,7 +568,7 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path, image_info: dict
     """Run ImageMagick thresholding (with adaptive preprocessing if needed) and Potrace to convert PNG to SVG"""
     temp_filename = png_path.stem + "_temp"
     pbm_path = TEMP_DIR / f"{temp_filename}.pbm"
-    
+
     try:
         preprocess = image_info is not None and _needs_preprocessing(image_info)
         if preprocess:
@@ -503,7 +608,7 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path, image_info: dict
         if not pbm_path.exists():
             logger.error("   PBM file was not created")
             return False
-        
+
         turdsize = "10" if preprocess else "2"
         potrace_cmd = [
             "potrace", str(pbm_path),
@@ -517,11 +622,11 @@ def run_potrace_conversion(png_path: Path, temp_svg_path: Path, image_info: dict
             text=True,
             timeout=120
         )
-        
+
         if result.returncode != 0:
             logger.error(f"   Potrace conversion failed: {result.stderr}")
             return False
-        
+
         return True
 
     except subprocess.TimeoutExpired:
@@ -574,7 +679,7 @@ def convert_png_to_svg_local(png_path: Path, engine: str | None = None) -> str:
         optimized_svg_content = optimize_svg(standardized_svg_content)
 
         logger.debug(f"   Flattening SVG groups...")
-        flattened_svg_content = flatten_svg_content(optimized_svg_content)
+        flattened_svg_content = flatten_svg_content(optimized_svg_content, engine=selected_engine)
 
         try:
             temp_svg_path.unlink(missing_ok=True)
