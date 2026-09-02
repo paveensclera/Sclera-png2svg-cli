@@ -23,6 +23,14 @@ from utils.ocr import (
     resize_img_det,
     init_ocr_engine,
 )
+from utils.image_utils import is_rgb_image
+from utils.tiler import (
+    vectorize_image_tiled,
+    bake_svg_transforms,
+    sort_svg_paths_by_area,
+    DEFAULT_TILE_SIZE,
+    get_image_dimensions,
+)
 import xml.etree.ElementTree as ET
 import cv2 as cv
 
@@ -158,6 +166,8 @@ OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/home/sclera/images/svg_floors"))
 CONVERSION_ENGINE = os.getenv("CONVERSION_ENGINE", "potrace").lower()
 if CONVERSION_ENGINE not in ["potrace", "vtracer"]:
     CONVERSION_ENGINE = "potrace"
+
+AUTO_DETECT_ENGINE = os.getenv("AUTO_DETECT_ENGINE", "false").lower() in ("true", "1", "yes")
 
 TEMP_DIR = Path("/tmp/floor_map_processing")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -350,27 +360,83 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
         return svg_content
 
 
-def flatten_svg_content(svg_content: str) -> str:
-    """Flatten SVG by removing <g> tags and propagating attributes to children."""
+def flatten_svg_content(svg_content: str, engine: str = "potrace") -> str:
+    """
+    Post-process and flatten SVG:
+    1. Propagates group-level presentation attributes (e.g. fill) down to child shapes so colors are not lost.
+    2. Unwraps non-semantic groups, but preserves semantic feature containers (e.g. walls-layer, vt_marker, route).
+    3. For VTracer, removes near-white background paths (RGB >= 245) which act as opaque white sheets covering lines.
+    4. Ensures all shapes have explicit fills.
+    """
     try:
         root = ET.fromstring(svg_content)
+        engine_str = (engine or "potrace").lower()
 
         def recurse_and_flatten(parent, group):
             for child in list(group):
                 for attr, value in group.attrib.items():
                     if attr not in child.attrib:
                         child.attrib[attr] = value
-                parent.append(child)
-                if child.tag == "{http://www.w3.org/2000/svg}g" or child.tag == "g":
+
+                tag_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag_local == "g":
                     recurse_and_flatten(parent, child)
+                else:
+                    if tag_local in ("path", "polygon", "rect", "circle", "ellipse", "line", "polyline"):
+                        if not child.get("fill"):
+                            fill_val = group.get("fill")
+                            if fill_val:
+                                child.set("fill", fill_val)
+                            elif engine_str == "potrace":
+                                child.set("fill", "#000000")
+                    parent.append(child)
+
             parent.remove(group)
 
+        SEMANTIC_GROUP_IDS = {"walls-layer"}
+        SEMANTIC_DATA_TYPES = {"vt_marker", "route"}
+
         for elem in list(root):
-            if elem.tag == "{http://www.w3.org/2000/svg}g" or elem.tag == "g":
+            tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag_local == "g":
+                elem_id = elem.get("id", "")
+                elem_type = elem.get("data-type", "")
+                if elem_id in SEMANTIC_GROUP_IDS or elem_type in SEMANTIC_DATA_TYPES or elem.get("data-camera") or elem.get("data-wifi"):
+                    # Preserve semantic container, but ensure explicit fills on its children
+                    for child in elem:
+                        ctag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                        if ctag in ("path", "polygon", "rect", "circle", "ellipse", "polyline") and not child.get("fill"):
+                            child.set("fill", "none")
+                    continue
                 recurse_and_flatten(root, elem)
 
+        # 3. For VTracer, filter out near-white background paths (RGB >= 245) which act as opaque white sheets covering lines
+        if engine_str == "vtracer":
+            for elem in list(root):
+                tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                if tag_local == "path":
+                    fill_val = (elem.get("fill") or "").strip().lower()
+                    if fill_val.startswith("#"):
+                        h = fill_val.lstrip("#")
+                        if len(h) == 3:
+                            h = "".join([c * 2 for c in h])
+                        if len(h) == 6:
+                            try:
+                                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                                if r >= 245 and g >= 245 and b >= 245:
+                                    root.remove(elem)
+                            except ValueError:
+                                pass
+
+        # 4. Ensure every shape at root has explicit fill
+        for elem in list(root):
+            tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag_local in ("path", "polygon", "rect", "circle", "ellipse", "polyline"):
+                if not elem.get("fill"):
+                    elem.set("fill", "#000000")
+
         ET.register_namespace("", "http://www.w3.org/2000/svg")
-        return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+        return ET.tostring(root, encoding="utf-8").decode("utf-8")
     except Exception as e:
         logger.warning(f"     SVG flattening failed, using unflattened SVG: {str(e)}")
         return svg_content
@@ -500,30 +566,57 @@ def optimize_svg(svg_content: str) -> str:
         return svg_content
 
 
-def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
-    """Run ImageMagick normalization and VTracer to convert PNG to SVG"""
+def run_vtracer_conversion(png_path: Path, temp_svg_path: Path, image_info: dict | None = None) -> bool:
+    """Run ImageMagick normalization and VTracer (or Tiled VTracer for large images) to convert PNG to SVG"""
     import vtracer
+    import shutil
 
     temp_filename = png_path.stem + "_temp"
     normalized_png = TEMP_DIR / f"{temp_filename}_normalized.png"
 
     try:
+        width = (image_info or {}).get("width")
+        height = (image_info or {}).get("height")
+        if not width or not height:
+            try:
+                width, height = get_image_dimensions(png_path)
+            except Exception:
+                width, height = 0, 0
+
+        tile_size = int(os.getenv("MAX_TILE_DIM", os.getenv("TILE_SIZE", str(DEFAULT_TILE_SIZE))))
+
+        if max(width, height) > tile_size:
+            logger.info(
+                f"   Image dimensions ({width}x{height} px) exceed {tile_size}px. "
+                f"Dispatching to Tiled Grid Vectorization."
+            )
+            vectorize_image_tiled(
+                png_path,
+                temp_svg_path,
+                tile_size=tile_size,
+                temp_dir=TEMP_DIR,
+            )
+            return True
+
+        logger.info(
+            f"   Image dimensions ({width}x{height} px) <= {tile_size}px. "
+            f"Running single-pass VTracer."
+        )
+        im_cmd = "magick" if shutil.which("magick") else "convert"
         normalize_cmd = [
-            "magick",
-            str(png_path),
-            "-depth",
-            "8",
-            "-background",
-            "white",
-            "-alpha",
-            "off",
-            "-alpha",
-            "remove",
+            im_cmd, str(png_path),
+            "-depth", "8",
+            "-background", "white",
+            "-alpha", "off",
+            "-alpha", "remove",
             str(normalized_png),
         ]
 
         result = subprocess.run(
-            normalize_cmd, capture_output=True, text=True, timeout=120
+            normalize_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120
         )
 
         if result.returncode != 0:
@@ -538,14 +631,15 @@ def run_vtracer_conversion(png_path: Path, temp_svg_path: Path) -> bool:
             str(temp_svg_path),
             mode="polygon",
             colormode="color",
-            hierarchical="stacked",
+            hierarchical="cutout",
             filter_speckle=4,
             color_precision=6,
             layer_difference=8,
             corner_threshold=60,
             length_threshold=4.0,
-            splice_threshold=45,
+            splice_threshold=45
         )
+        bake_svg_transforms(temp_svg_path)
 
         return True
 
@@ -653,16 +747,17 @@ def run_potrace_conversion(
             logger.warning(f"   Failed to delete PBM file: {str(e)}")
 
 
-def convert_png_to_svg_local(png_path: Path) -> str:
+def convert_png_to_svg_local(png_path: Path, engine: str | None = None) -> str:
     """Convert PNG to SVG using either Potrace (with adaptive preprocessing) or VTracer based on configuration"""
-    logger.debug(f"CONVERTING: {png_path.name} (Engine: {CONVERSION_ENGINE})")
+    selected_engine = (engine or CONVERSION_ENGINE).lower()
+    logger.debug(f"CONVERTING: {png_path.name} (Engine: {selected_engine})")
     logger.debug(f"   Input:  {png_path}")
 
     temp_filename = png_path.stem + "_temp"
     temp_svg_path = TEMP_DIR / f"{temp_filename}.svg"
 
     try:
-        if CONVERSION_ENGINE == "vtracer":
+        if selected_engine == "vtracer":
             logger.debug(f"   Running VTracer for conversion...")
             success = run_vtracer_conversion(png_path, temp_svg_path)
         else:
@@ -674,6 +769,12 @@ def convert_png_to_svg_local(png_path: Path) -> str:
             logger.error(f"   Conversion tool failed to generate SVG for {png_path.name}")
             return None
 
+        if selected_engine == "vtracer":
+            try:
+                sort_svg_paths_by_area(temp_svg_path)
+            except Exception as e:
+                logger.warning(f"   Failed to sort SVG paths by area: {e}")
+
         with open(temp_svg_path, "r", encoding="utf-8") as f:
             svg_content = f.read()
 
@@ -683,11 +784,13 @@ def convert_png_to_svg_local(png_path: Path) -> str:
             )
             return None
 
+        standardized_svg_content = svg_content
+
         logger.debug(f"   Optimizing SVG file...")
-        optimized_svg_content = optimize_svg(svg_content)
+        optimized_svg_content = optimize_svg(standardized_svg_content)
 
         logger.debug(f"   Flattening SVG groups...")
-        flattened_svg_content = flatten_svg_content(optimized_svg_content)
+        flattened_svg_content = flatten_svg_content(optimized_svg_content, engine=selected_engine)
 
         try:
             temp_svg_path.unlink(missing_ok=True)
@@ -1146,13 +1249,23 @@ def process_local_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
+            if AUTO_DETECT_ENGINE and orig_img is not None:
+                has_color = is_rgb_image(orig_img)
+                file_engine = "vtracer" if has_color else "potrace"
+                logger.info(
+                    f"   Auto-detected engine: {file_engine.upper()} "
+                    f"({'RGB color content found' if has_color else 'grayscale/monochrome'})"
+                )
+            else:
+                file_engine = CONVERSION_ENGINE
+
+            img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
             img = remove_txt(img, detections)
             temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
-            resultant_svg_content = convert_png_to_svg_local(temp_png)
+            resultant_svg_content = convert_png_to_svg_local(temp_png, engine=file_engine)
 
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -1198,6 +1311,9 @@ def process_local_files(filter_filenames: list = None):
                 geo_data=geo_data,
                 scale_x=scale_x,
                 scale_y=scale_y,
+                orig_w=orig_w,
+                orig_h=orig_h,
+                engine=file_engine,
             )
             tree.write(
                 os.path.join(OUTPUT_DIR, svg_filename),
@@ -1427,13 +1543,23 @@ def process_filtered_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            img, detections = recognize_txt(str(png_path), OCR_INSTANCE)
+            if AUTO_DETECT_ENGINE and orig_img is not None:
+                has_color = is_rgb_image(orig_img)
+                file_engine = "vtracer" if has_color else "potrace"
+                logger.info(
+                    f"   Auto-detected engine: {file_engine.upper()} "
+                    f"({'RGB color content found' if has_color else 'grayscale/monochrome'})"
+                )
+            else:
+                file_engine = CONVERSION_ENGINE
+
+            img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
             img = remove_txt(img, detections)
             temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
-            resultant_svg_content = convert_png_to_svg_local(temp_png)
+            resultant_svg_content = convert_png_to_svg_local(temp_png, engine=file_engine)
 
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -1479,6 +1605,9 @@ def process_filtered_files(filter_filenames: list = None):
                 geo_data=geo_data,
                 scale_x=scale_x,
                 scale_y=scale_y,
+                orig_w=orig_w,
+                orig_h=orig_h,
+                engine=file_engine,
             )
 
             tree.write(
@@ -1709,15 +1838,25 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                 orig_img = cv.imread(str(temp_png_path))
                 orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
+                if AUTO_DETECT_ENGINE and orig_img is not None:
+                    has_color = is_rgb_image(orig_img)
+                    file_engine = "vtracer" if has_color else "potrace"
+                    logger.info(
+                        f"   Auto-detected engine: {file_engine.upper()} "
+                        f"({'RGB color content found' if has_color else 'grayscale/monochrome'})"
+                    )
+                else:
+                    file_engine = CONVERSION_ENGINE
+
                 # Perform OCR & text removal
-                img, detections = recognize_txt(str(temp_png_path), OCR_INSTANCE)
+                img, detections = recognize_txt(str(temp_png_path), OCR_INSTANCE, engine=file_engine)
                 img = remove_txt(img, detections)
 
                 temp_notext_png = temp_png_path.parent / f"{image_id}_notext.png"
                 cv.imwrite(str(temp_notext_png), img)
 
                 # Convert to SVG in memory
-                resultant_svg_content = convert_png_to_svg_local(temp_notext_png)
+                resultant_svg_content = convert_png_to_svg_local(temp_notext_png, engine=file_engine)
                 if not resultant_svg_content:
                     conversion_failed_count += 1
                     logger.error(
@@ -1764,6 +1903,9 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     geo_data=geo_data,
                     scale_x=scale_x,
                     scale_y=scale_y,
+                    orig_w=orig_w,
+                    orig_h=orig_h,
+                    engine=file_engine,
                 )
 
                 # Save generated SVG and upload to API
@@ -1917,7 +2059,7 @@ def process_floors_from_api(api_endpoint: str):
 
 def parse_arguments_and_update_config():
     """Parse CLI arguments and update configuration globals"""
-    global CONVERSION_ENGINE, ENABLE_SVGO, INPUT_DIR, OUTPUT_DIR
+    global CONVERSION_ENGINE, AUTO_DETECT_ENGINE, ENABLE_SVGO, INPUT_DIR, OUTPUT_DIR
 
     import argparse
 
@@ -1930,6 +2072,13 @@ def parse_arguments_and_update_config():
         choices=["potrace", "vtracer"],
         default=CONVERSION_ENGINE,
         help="Conversion engine to use (default: potrace or CONVERSION_ENGINE env var)",
+    )
+    parser.add_argument(
+        "--auto-detect", "--auto-detect-engine", "-a",
+        dest="auto_detect",
+        action=argparse.BooleanOptionalAction,
+        default=AUTO_DETECT_ENGINE,
+        help="Auto-detect conversion engine per image based on RGB color content (potrace for grayscale, vtracer for RGB)"
     )
     parser.add_argument(
         "--disable-svgo",
@@ -1965,6 +2114,7 @@ def parse_arguments_and_update_config():
         os.environ["VDMS_FILTER"] = args.vdms
 
     CONVERSION_ENGINE = args.engine
+    AUTO_DETECT_ENGINE = bool(args.auto_detect)
     ENABLE_SVGO = not args.disable_svgo
     INPUT_DIR = Path(args.input_dir)
     OUTPUT_DIR = Path(args.output_dir)
@@ -1981,7 +2131,8 @@ if __name__ == "__main__":
     print("=" * 80)
     logger.info("Starting PNG to SVG conversion...")
     logger.info(f"Python script: {__file__}")
-    logger.info(f"Conversion Engine: {CONVERSION_ENGINE.upper()}")
+    logger.info(f"Conversion Engine: {CONVERSION_ENGINE.upper()}{' (Default - Auto-detect enabled)' if AUTO_DETECT_ENGINE else ''}")
+    logger.info(f"Auto-detect Engine: {'Enabled' if AUTO_DETECT_ENGINE else 'Disabled'}")
 
     if not INPUT_DIR.exists():
         logger.error(f"Input directory does not exist: {INPUT_DIR}")

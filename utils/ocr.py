@@ -200,32 +200,32 @@ def estimate_optimal_tile_params(binary):
 
 def init_ocr_engine():
     """Initializes the RapidOCR engine with specified parameters."""
-    ocr = RapidOCR(params={
-        "Global.text_score": SCORE_THRESHOLD,
-        #"Global.max_side_len": 4096,
-        "Det.ocr_version": OCRVersion.PPOCRV5,
-        "Det.engine_type": EngineType.ONNXRUNTIME,
-        "Det.model_type": ModelType.MOBILE,
-        "Det.lang_type": LangDet.CH,
-        #"Det.limit_side_len": 4096,
-        "Det.limit_type": "max",
-        "Det.box_thresh": 0.3,
-        "Det.unclip_ratio": 1.8,
-        
-        "Cls.ocr_version": OCRVersion.PPOCRV5,
-        "Cls.engine_type": EngineType.ONNXRUNTIME,
-        "Cls.model_type": ModelType.MOBILE,
-        "Cls.lang_type": LangCls.CH,
-        
-        "Rec.ocr_version": OCRVersion.PPOCRV5,
-        "Rec.engine_type": EngineType.ONNXRUNTIME,
-        "Rec.model_type": ModelType.MOBILE,
-        "Rec.lang_type": LangRec.EN,
-        
-        "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
-        "EngineConfig.onnxruntime.intra_op_num_threads": CPU_THREADS,
-        "EngineConfig.onnxruntime.inter_op_num_threads": 1
-    })
+    ocr = RapidOCR(
+        params={
+            "Global.text_score": SCORE_THRESHOLD,
+            # "Global.max_side_len": 4096,
+            "Det.ocr_version": OCRVersion.PPOCRV6,
+            "Det.engine_type": EngineType.ONNXRUNTIME,
+            "Det.model_type": ModelType.SMALL,
+            # "Det.lang_type": LangDet.CH,
+            # "Det.limit_side_len": 4096,
+            "Det.limit_type": "max",
+            "Det.box_thresh": 0.3,
+            "Det.unclip_ratio": 1.8,
+            # "Cls.ocr_version": OCRVersion.PPOCRV6,
+            "Cls.engine_type": EngineType.ONNXRUNTIME,
+            "Cls.model_type": ModelType.MOBILE,
+            # "Cls.lang_type": LangCls.CH,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
+            "Rec.engine_type": EngineType.ONNXRUNTIME,
+            "Rec.model_type": ModelType.SMALL,
+            # "Rec.lang_type": LangRec.EN,
+            "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
+            "EngineConfig.onnxruntime.intra_op_num_threads": CPU_THREADS,
+            "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+        }
+    )
+    logger.info(f"[OCR] RapidOCR engine initialized | threads={CPU_THREADS}")
     return ocr
 
 # def update_side_len(ocr, side_len):
@@ -234,8 +234,9 @@ def init_ocr_engine():
 #         limit_side_len=side_len
 #     )
 
-def recognize_txt(image_path, ocr):
+def recognize_txt(image_path, ocr, engine=None):
     """Pre-processes image and runs RapidOCR in overlapping grids."""
+    engine = (engine or os.getenv("CONVERSION_ENGINE", "potrace")).lower()
     img, w, h = load_image(image_path)
     process_img = remove_noise(cv.erode(remove_thin_lines(binarize_image(img), thickness=2), np.ones((2, 2), np.uint8), iterations=1))
     
@@ -265,7 +266,11 @@ def recognize_txt(image_path, ocr):
                 skipped_count += 1
                 continue
 
-            res = ocr(process_img[ymin:ymax, xmin:xmax])
+            if engine == "vtracer":
+                res = ocr(img[ymin:ymax, xmin:xmax])
+            else:
+                # Previous code for potrace
+                res = ocr(process_img[ymin:ymax, xmin:xmax])
             tile_count += 1
 
             if res and res.boxes is not None and len(res.txts) > 0:
@@ -376,28 +381,28 @@ def resize_img_det(img, detections, max_side=RESIZE_LIMIT):
     return resized_img, scaled_detections
 
 
-def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None, scale_x = 1.0, scale_y = 1.0):
+def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None, scale_x = 1.0, scale_y = 1.0, orig_w = 2000, orig_h = 2000, engine = None):
     """
     Injects text elements into an SVG file based on detected text regions, with scale factors matching py-png2svg-ms.
     """
+    engine = (engine or os.getenv("CONVERSION_ENGINE", "potrace")).lower()
     ET.register_namespace('', "http://www.w3.org/2000/svg")
     ET.register_namespace('sclera', 'https://sclera.app/ns')
     root = ET.fromstring(svg)
     
     # remove extra vtracer background path if engine is vtracer
-    engine = os.getenv("CONVERSION_ENGINE", "potrace").lower()
-    if engine == "vtracer":
-        for child in list(root):
-            tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-            if tag_name == 'path' and 'd' in child.attrib:
-                d = child.attrib['d']
-                if d.startswith('M0,0') or d.startswith('M 0 0'):
-                    root.remove(child)
-                    break
+    # if engine == "vtracer":
+    #     for child in list(root):
+    #         tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+    #         if tag_name == 'path' and 'd' in child.attrib:
+    #             d = child.attrib['d']
+    #             if d.startswith('M0,0') or d.startswith('M 0 0'):
+    #                 root.remove(child)
+    #                 break
     
     # inject floor metadata
     if injector:
-        injector.write_into_svg_tag(root, floor_id, floor_name, geo_data)
+        injector.write_into_svg_tag(root, floor_id, floor_name, geo_data, orig_w, orig_h)
         injector.write_location_path_tags(root, floor_locations)
         injector.write_path_path_tags(root, paths)
         injector.inject_sclera_data(root, raw_svg_content, floor_locations, paths, geo_data)
@@ -443,3 +448,4 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
             text_el.text = det["text"]
             
     return ET.ElementTree(root)
+
