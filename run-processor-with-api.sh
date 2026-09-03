@@ -80,6 +80,8 @@ echo ""
 
 # Run the processing container with API_ENDPOINT environment variable
 docker run --rm \
+    --cpus "2.0" \
+    --memory "4g" \
     --network sclera_bridge \
     --name "png-processor-api-$(date +%s)" \
     -e API_ENDPOINT="$API_ENDPOINT" \

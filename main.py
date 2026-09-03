@@ -1089,6 +1089,12 @@ def process_local_files(filter_filenames: list = None):
                     logger.debug(f"   Cleaned up temporary file: {temp_png.name}")
                 except Exception as cleanup_err:
                     logger.warning(f"   Failed to delete temp file {temp_png}: {cleanup_err}")
+            try:
+                del orig_img, img, detections, resultant_svg_content, tree
+            except NameError:
+                pass
+            import gc
+            gc.collect()
     overall_end = time.perf_counter()
  
     print()
@@ -1347,6 +1353,12 @@ def process_filtered_files(filter_filenames: list = None):
                     logger.debug(f"   Cleaned up temporary file: {temp_png.name}")
                 except Exception as cleanup_err:
                     logger.warning(f"   Failed to delete temp file {temp_png}: {cleanup_err}")
+            try:
+                del orig_img, img, detections, resultant_svg_content, tree
+            except NameError:
+                pass
+            import gc
+            gc.collect()
     overall_end = time.perf_counter()
 
     print()
