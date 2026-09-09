@@ -82,6 +82,8 @@ echo ""
 docker run --rm \
     --cpus "2.0" \
     --memory "4g" \
+    --blkio-weight 100 \
+    --oom-score-adj 1000 \
     --network sclera_bridge \
     --name "png-processor-api-$(date +%s)" \
     -e API_ENDPOINT="$API_ENDPOINT" \

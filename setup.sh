@@ -71,6 +71,11 @@ if [ $? -eq 0 ]; then
     echo "1. Put PNG files in: /home/sclera/images/png_floors/"
     echo "2. Run: ./run-processor.sh"
     echo "3. Check results in: /home/sclera/images/svg_floors/"
+    echo ""
+    echo "Engine Configuration (.env or prefix command):"
+    echo "  - CONVERSION_ENGINE=potrace (default, B&W plans) or vtracer (color/complex)"
+    echo "  - AUTO_DETECT_ENGINE=true   (auto-picks vtracer for color, potrace for B&W)"
+    echo "  Example: CONVERSION_ENGINE=vtracer ./run-processor-with-api.sh"
 else
     echo ""
     echo "Setup failed! Please check the error messages above."
