@@ -46,7 +46,7 @@ module.exports = {
           
           // Convert colors to shorter formats
           convertColors: {
-            currentColor: true,
+            currentColor: false,
             names2hex: true,
             rgb2hex: true,
             shorthex: true,
