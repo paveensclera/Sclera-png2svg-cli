@@ -34,10 +34,10 @@ DEFAULT_TILE_SIZE = int(os.getenv("MAX_TILE_DIM", os.getenv("TILE_SIZE", "4000")
 VTRACER_DEFAULT_PARAMS: Dict[str, Any] = {
     "mode": "polygon",
     "colormode": "color",
-    "hierarchical": "cutout",
+    "hierarchical": "stacked",
     "filter_speckle": 4,
-    "color_precision": 6,
-    "layer_difference": 8,
+    "color_precision": 8,
+    "layer_difference": 4,
     "corner_threshold": 60,
     "length_threshold": 4.0,
     "splice_threshold": 45,

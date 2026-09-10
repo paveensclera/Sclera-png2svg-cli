@@ -334,23 +334,6 @@ def flatten_svg_content(svg_content: str, engine: str = "potrace") -> str:
                     continue
                 recurse_and_flatten(root, elem)
 
-        # 3. For VTracer, filter out near-white background paths (RGB >= 245) which act as opaque white sheets covering lines
-        if engine_str == "vtracer":
-            for elem in list(root):
-                tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-                if tag_local == "path":
-                    fill_val = (elem.get("fill") or "").strip().lower()
-                    if fill_val.startswith("#"):
-                        h = fill_val.lstrip("#")
-                        if len(h) == 3:
-                            h = "".join([c * 2 for c in h])
-                        if len(h) == 6:
-                            try:
-                                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-                                if r >= 245 and g >= 245 and b >= 245:
-                                    root.remove(elem)
-                            except ValueError:
-                                pass
 
         # 4. Ensure every shape at root has explicit fill
         for elem in list(root):
