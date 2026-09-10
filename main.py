@@ -28,6 +28,8 @@ from utils.tiler import (
     vectorize_image_tiled,
     bake_svg_transforms,
     sort_svg_paths_by_area,
+    translate_element_coordinates,
+    parse_transform_translate,
     DEFAULT_TILE_SIZE,
     get_image_dimensions,
 )
@@ -167,7 +169,27 @@ CONVERSION_ENGINE = os.getenv("CONVERSION_ENGINE", "potrace").lower()
 if CONVERSION_ENGINE not in ["potrace", "vtracer"]:
     CONVERSION_ENGINE = "potrace"
 
-AUTO_DETECT_ENGINE = os.getenv("AUTO_DETECT_ENGINE", "false").lower() in ("true", "1", "yes")
+AUTO_DETECT_ENGINE = os.getenv("AUTO_DETECT_ENGINE", os.getenv("AUTO_DETECT", "false")).lower() in ("true", "1", "yes")
+
+
+def determine_engine(img=None, default_engine: str = None) -> str:
+    """
+    Determine whether to use Potrace or VTracer engine.
+    If AUTO_DETECT_ENGINE is enabled and img is provided, uses is_rgb_image:
+      - RGB / color image -> 'vtracer'
+      - Grayscale / monochrome image -> 'potrace'
+    Otherwise, returns default_engine or CONVERSION_ENGINE.
+    """
+    base_engine = (default_engine or CONVERSION_ENGINE).lower()
+    if AUTO_DETECT_ENGINE and img is not None:
+        is_rgb = is_rgb_image(img)
+        engine = "vtracer" if is_rgb else "potrace"
+        logger.info(
+            f"   Auto-detected engine: {engine.upper()} (color={'RGB' if is_rgb else 'Grayscale'})"
+        )
+        return engine
+    return base_engine
+
 
 TEMP_DIR = Path("/tmp/floor_map_processing")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -361,21 +383,32 @@ def standardize_svg_for_frontend(svg_content: str) -> str:
 
 
 def flatten_svg_content(svg_content: str, engine: str = "potrace") -> str:
-    """
-    Post-process and flatten SVG:
-    1. Propagates group-level presentation attributes (e.g. fill) down to child shapes so colors are not lost.
-    2. Unwraps non-semantic groups, but preserves semantic feature containers (e.g. walls-layer, vt_marker, route).
-    3. For VTracer, removes near-white background paths (RGB >= 245) which act as opaque white sheets covering lines.
-    4. Ensures all shapes have explicit fills.
-    """
+    """Flatten SVG by converting all <g> tags into direct child <path> and shape elements, baking transforms and attributes."""
+    if not svg_content or "<svg" not in svg_content:
+        return svg_content
+
+    engine_str = (engine or "potrace").lower()
+
     try:
         root = ET.fromstring(svg_content)
-        engine_str = (engine or "potrace").lower()
+        if "xmlns" in root.attrib:
+            del root.attrib["xmlns"]
 
+        # 1. Bake transforms on root-level children
+        for child in list(root):
+            translate_element_coordinates(child, 0.0, 0.0)
+
+        # 2. Recursively convert all <g> tags into flat child paths/shapes
         def recurse_and_flatten(parent, group):
+            group_transform = group.get("transform")
+            gtx, gty = parse_transform_translate(group_transform) if group_transform else (0.0, 0.0)
+
             for child in list(group):
+                if gtx != 0 or gty != 0:
+                    translate_element_coordinates(child, gtx, gty)
+
                 for attr, value in group.attrib.items():
-                    if attr not in child.attrib:
+                    if attr not in ("transform", "id") and attr not in child.attrib:
                         child.attrib[attr] = value
 
                 tag_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
@@ -409,24 +442,6 @@ def flatten_svg_content(svg_content: str, engine: str = "potrace") -> str:
                             child.set("fill", "none")
                     continue
                 recurse_and_flatten(root, elem)
-
-        # 3. For VTracer, filter out near-white background paths (RGB >= 245) which act as opaque white sheets covering lines
-        if engine_str == "vtracer":
-            for elem in list(root):
-                tag_local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-                if tag_local == "path":
-                    fill_val = (elem.get("fill") or "").strip().lower()
-                    if fill_val.startswith("#"):
-                        h = fill_val.lstrip("#")
-                        if len(h) == 3:
-                            h = "".join([c * 2 for c in h])
-                        if len(h) == 6:
-                            try:
-                                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-                                if r >= 245 and g >= 245 and b >= 245:
-                                    root.remove(elem)
-                            except ValueError:
-                                pass
 
         # 4. Ensure every shape at root has explicit fill
         for elem in list(root):
@@ -1249,15 +1264,7 @@ def process_local_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            if AUTO_DETECT_ENGINE and orig_img is not None:
-                has_color = is_rgb_image(orig_img)
-                file_engine = "vtracer" if has_color else "potrace"
-                logger.info(
-                    f"   Auto-detected engine: {file_engine.upper()} "
-                    f"({'RGB color content found' if has_color else 'grayscale/monochrome'})"
-                )
-            else:
-                file_engine = CONVERSION_ENGINE
+            file_engine = determine_engine(orig_img)
 
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
             img = remove_txt(img, detections)
@@ -1543,15 +1550,7 @@ def process_filtered_files(filter_filenames: list = None):
             orig_img = cv.imread(str(png_path))
             orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-            if AUTO_DETECT_ENGINE and orig_img is not None:
-                has_color = is_rgb_image(orig_img)
-                file_engine = "vtracer" if has_color else "potrace"
-                logger.info(
-                    f"   Auto-detected engine: {file_engine.upper()} "
-                    f"({'RGB color content found' if has_color else 'grayscale/monochrome'})"
-                )
-            else:
-                file_engine = CONVERSION_ENGINE
+            file_engine = determine_engine(orig_img)
 
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
             img = remove_txt(img, detections)
@@ -1620,8 +1619,8 @@ def process_filtered_files(filter_filenames: list = None):
             svg_bytes = ET.tostring(
                 tree.getroot(), encoding="utf-8", xml_declaration=True
             )
-            upload_response = data.upload_floor(png_path.stem, svg_bytes)
-            print("Upload response:", upload_response)
+            upload_response = data.upload_floor(floor_id, svg_bytes)
+            logger.debug(f"Upload response: {upload_response}")
 
             processed_count += 1
             final_size = len(resultant_svg_content)
@@ -1838,15 +1837,7 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                 orig_img = cv.imread(str(temp_png_path))
                 orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (2000, 2000)
 
-                if AUTO_DETECT_ENGINE and orig_img is not None:
-                    has_color = is_rgb_image(orig_img)
-                    file_engine = "vtracer" if has_color else "potrace"
-                    logger.info(
-                        f"   Auto-detected engine: {file_engine.upper()} "
-                        f"({'RGB color content found' if has_color else 'grayscale/monochrome'})"
-                    )
-                else:
-                    file_engine = CONVERSION_ENGINE
+                file_engine = determine_engine(orig_img)
 
                 # Perform OCR & text removal
                 img, detections = recognize_txt(str(temp_png_path), OCR_INSTANCE, engine=file_engine)
