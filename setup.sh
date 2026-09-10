@@ -52,10 +52,10 @@ success &= test_tool(['svgcleaner', '--version'], 'svgcleaner')
 success &= test_tool(['svgo', '--version'], 'svgo')
 
 if success:
-    print('\\nAll dependencies are working correctly!')
+    print('\nAll dependencies are working correctly!')
     sys.exit(0)
 else:
-    print('\\nSome dependencies failed!')
+    print('\nSome dependencies failed!')
     sys.exit(1)
 "
 
@@ -65,17 +65,20 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Your isolated PNG processor is ready to use."
     echo "Production containers remain unchanged:"
-    docker ps --format "table {{.Names}}\t{{.Status}}"
+    docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
     echo ""
     echo "Next steps:"
-    echo "1. Put PNG files in: /home/sclera/images/png_floors/"
-    echo "2. Run: ./run-processor.sh"
+    echo "1. Configure mode in .env or via CLI flags (single-tenant or multi-tenant)"
+    echo "2. Run processor:"
+    echo "   - Single-Tenant: ./run-processor-with-api.sh --mode single-tenant"
+    echo "   - Multi-Tenant:  ./run-processor-with-api.sh --mode multi-tenant --vdms <VDMS_ID>"
+    echo "   - Monitored:     ./run-conversion-with-monitoring.sh"
     echo "3. Check results in: /home/sclera/images/svg_floors/"
     echo ""
-    echo "Engine Configuration (.env or prefix command):"
+    echo "Engine Configuration (.env or CLI flags):"
     echo "  - CONVERSION_ENGINE=potrace (default, B&W plans) or vtracer (color/complex)"
     echo "  - AUTO_DETECT_ENGINE=true   (auto-picks vtracer for color, potrace for B&W)"
-    echo "  Example: CONVERSION_ENGINE=vtracer ./run-processor-with-api.sh"
+    echo "  Example: ./run-processor-with-api.sh --mode multi-tenant --auto-detect"
 else
     echo ""
     echo "Setup failed! Please check the error messages above."

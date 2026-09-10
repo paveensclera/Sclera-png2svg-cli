@@ -1,5 +1,6 @@
 #!/bin/bash
 # PNG to SVG Conversion with Real-Time Resource Monitoring
+# Supports Single-Tenant and Multi-Tenant processing modes
 # No additional packages required - uses Docker stats API
 
 set -e
@@ -9,34 +10,129 @@ load_env() {
     local env_file="$1"
     if [ -f "$env_file" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
             [[ "$line" =~ ^[[:space:]]*# ]] && continue
             [[ -z "${line//[[:space:]]/}" ]] && continue
             if [[ "$line" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
                 key="${BASH_REMATCH[1]}"
                 val="${BASH_REMATCH[2]}"
+                val="${val%$'\r'}"
                 val="${val#\"}"
                 val="${val%\"}"
                 val="${val#\'}"
                 val="${val%\'}"
+                val="${val%$'\r'}"
                 export "$key"="$val"
             fi
         done < "$env_file"
     fi
 }
 load_env ".env"
+load_env ".env.local"
 
-# Configuration
+# Show help function
+show_help() {
+    echo "================================================================================"
+    echo "PNG to SVG Processor with Monitoring - Usage Guide"
+    echo "================================================================================"
+    echo "Usage:"
+    echo "  $0 [options] [-- any-main.py-args]"
+    echo ""
+    echo "Options:"
+    echo "  -m, --mode <mode>        Execution mode: 'single-tenant' (default) or 'multi-tenant'"
+    echo "  -v, --vdms <id(s)>       VDMS filter for multi-tenant (e.g. 'VDMS885' or 'VDMS885,VDMS886')"
+    echo "  -e, --engine <engine>    Conversion engine: 'potrace' (default) or 'vtracer'"
+    echo "  -a, --auto-detect        Auto-detect engine based on image color (vtracer for color, potrace for B&W)"
+    echo "      --disable-svgo       Disable SVGO optimization (use svgcleaner only)"
+    echo "  -i, --input-dir <dir>    Input directory containing PNG files (default: /home/sclera/images/png_floors)"
+    echo "  -o, --output-dir <dir>   Output directory for SVG files (default: /home/sclera/images/svg_floors)"
+    echo "  -h, --help               Show this help message"
+    echo "================================================================================"
+    exit 0
+}
+
+# Parse CLI arguments to override environment variables
+PASSTHROUGH_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            ;;
+        -m|--mode)
+            export MODE="$2"
+            shift 2
+            ;;
+        --mode=*)
+            export MODE="${1#*=}"
+            shift
+            ;;
+        -v|--vdms)
+            export VDMS_FILTER="$2"
+            shift 2
+            ;;
+        --vdms=*)
+            export VDMS_FILTER="${1#*=}"
+            shift
+            ;;
+        -e|--engine)
+            export CONVERSION_ENGINE="$2"
+            shift 2
+            ;;
+        --engine=*)
+            export CONVERSION_ENGINE="${1#*=}"
+            shift
+            ;;
+        -a|--auto-detect|--auto-detect-engine)
+            export AUTO_DETECT_ENGINE="true"
+            shift
+            ;;
+        --disable-svgo)
+            export ENABLE_SVGO="false"
+            shift
+            ;;
+        -i|--input-dir)
+            export PNG_INPUT_DIR="$2"
+            shift 2
+            ;;
+        --input-dir=*)
+            export PNG_INPUT_DIR="${1#*=}"
+            shift
+            ;;
+        -o|--output-dir)
+            export SVG_OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --output-dir=*)
+            export SVG_OUTPUT_DIR="${1#*=}"
+            shift
+            ;;
+        *)
+            PASSTHROUGH_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Normalize MODE (defaults to single-tenant if not multi-tenant)
+MODE_LOWER="$(echo "${MODE:-single-tenant}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+if [[ "$MODE_LOWER" =~ ^(multi-tenant|multitenant|multi_tenant|multi)$ ]]; then
+    export MODE="multi-tenant"
+else
+    export MODE="single-tenant"
+fi
+
+# Configuration Defaults
 PNG_INPUT_DIR="${PNG_INPUT_DIR:-/home/sclera/images/png_floors}"
 SVG_OUTPUT_DIR="${SVG_OUTPUT_DIR:-/home/sclera/images/svg_floors}"
 IMAGE_NAME="${IMAGE_NAME:-png-processor:latest}"
 
-export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
+export BASE_URL="${BASE_URL:-http://host.docker.internal:8888/api/v1/migration}"
+export MULTI_TENANT_BASEURL="${MULTI_TENANT_BASEURL:-https://tenant.com}"
 export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
-
-
+export VDMS_FILTER="${VDMS_FILTER:-}"
 
 # Monitoring configuration
 MONITOR_INTERVAL=1  # seconds
@@ -67,18 +163,24 @@ print_header() {
     echo -e "${BLUE}================================================================================${NC}"
     echo -e "${BOLD}PNG to SVG Conversion with Resource Monitoring${NC}"
     echo -e "${BLUE}================================================================================${NC}"
-    echo -e "Input directory:  ${CYAN}$PNG_INPUT_DIR${NC}"
+    echo -e "Mode:             ${CYAN}$MODE${NC}"
+    if [ "$MODE" = "multi-tenant" ]; then
+        echo -e "Multi-Tenant URL: ${CYAN}$MULTI_TENANT_BASEURL${NC}"
+        if [ -n "$VDMS_FILTER" ]; then
+            echo -e "VDMS Filter:      ${YELLOW}$VDMS_FILTER${NC}"
+        else
+            echo -e "VDMS Filter:      ${YELLOW}All VDMS${NC}"
+        fi
+    else
+        echo -e "Input directory:  ${CYAN}$PNG_INPUT_DIR${NC}"
+        echo -e "Single-Tenant URL:${CYAN}$BASE_URL${NC}"
+        echo -e "API Endpoint:     ${CYAN}$API_ENDPOINT${NC}"
+    fi
     echo -e "Output directory: ${CYAN}$SVG_OUTPUT_DIR${NC}"
     echo -e "Docker image:     ${CYAN}$IMAGE_NAME${NC}"
-    if [ -n "$API_ENDPOINT" ]; then
-        echo -e "API Endpoint:     ${CYAN}$API_ENDPOINT${NC}"
-        echo -e "Mode:             ${YELLOW}API-filtered processing${NC}"
-    else
-        echo -e "Mode:             ${YELLOW}Process all files${NC}"
-    fi
-    echo -e "SVGO Optimization: ${CYAN}$ENABLE_SVGO${NC}"
-    echo -e "Conversion engine: ${CYAN}$CONVERSION_ENGINE${NC}"
-    echo -e "Auto-detect engine: ${CYAN}$AUTO_DETECT_ENGINE${NC}"
+    echo -e "SVGO Optimization:${CYAN}$ENABLE_SVGO${NC}"
+    echo -e "Conversion engine:${CYAN}$CONVERSION_ENGINE${NC}"
+    echo -e "Auto-detect engine:${CYAN}$AUTO_DETECT_ENGINE${NC}"
     echo -e "${BLUE}================================================================================${NC}"
     echo ""
 }
@@ -87,22 +189,25 @@ print_header() {
 check_prerequisites() {
     echo -e "${YELLOW}Checking prerequisites...${NC}"
     
-    # Check directories
-    if [ ! -d "$PNG_INPUT_DIR" ]; then
-        echo -e "${RED}Input directory does not exist: $PNG_INPUT_DIR${NC}"
-        exit 1
-    fi
-    
     # Create output directory
     mkdir -p "$SVG_OUTPUT_DIR" 2>/dev/null || true
     
-    # Check for PNG files
-    PNG_COUNT=$(find "$PNG_INPUT_DIR" -name "*.png" -type f 2>/dev/null | wc -l)
-    if [ "$PNG_COUNT" -eq 0 ]; then
-        echo -e "${RED}No PNG files found in $PNG_INPUT_DIR${NC}"
-        exit 1
+    # Check input directory and PNG files for single-tenant
+    if [ "$MODE" != "multi-tenant" ]; then
+        if [ ! -d "$PNG_INPUT_DIR" ]; then
+            echo -e "${RED}Input directory does not exist: $PNG_INPUT_DIR${NC}"
+            exit 1
+        fi
+        
+        PNG_COUNT=$(find "$PNG_INPUT_DIR" -name "*.png" -type f 2>/dev/null | wc -l)
+        if [ "$PNG_COUNT" -eq 0 ]; then
+            echo -e "${RED}No PNG files found in $PNG_INPUT_DIR${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}Found $PNG_COUNT PNG files in local directory${NC}"
+    else
+        echo -e "${GREEN}Multi-tenant cloud mode: Images will be downloaded from API${NC}"
     fi
-    echo -e "${GREEN}Found $PNG_COUNT PNG files${NC}"
     
     # Check Docker
     if ! docker ps >/dev/null 2>&1; then
@@ -114,7 +219,7 @@ check_prerequisites() {
     # Check if image exists
     if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${IMAGE_NAME}$"; then
         echo -e "${RED}Docker image not found: $IMAGE_NAME${NC}"
-        echo -e "${YELLOW}   Build it with: docker build -t $IMAGE_NAME .${NC}"
+        echo -e "${YELLOW}   Build it with: ./setup.sh${NC}"
         exit 1
     fi
     echo -e "${GREEN}Docker image found: $IMAGE_NAME${NC}"
@@ -124,6 +229,10 @@ check_prerequisites() {
 
 # Fetch API filenames
 fetch_api_filenames() {
+    if [ "$MODE" = "multi-tenant" ]; then
+        return 0
+    fi
+
     if [ -z "$API_ENDPOINT" ]; then
         return 0
     fi
@@ -144,7 +253,7 @@ fetch_api_filenames() {
                 echo -e "   • $filename"
             done
         else
-            echo -e "${YELLOW}API request failed, will process all files${NC}"
+            echo -e "${YELLOW}API request failed, will process local files${NC}"
         fi
     else
         echo -e "${YELLOW}curl not available, skipping API check${NC}"
@@ -175,140 +284,156 @@ show_system_resources() {
 }
 
 # Monitor container resources silently (collect data only)
-# Convert a raw docker stats value (e.g. "1.22MB", "450B", "2.1GB") to MB
 to_mb() {
     local val=$(echo "$1" | sed 's/[^0-9.]//g')
     local unit=$(echo "$1" | sed 's/[0-9.]//g' | tr '[:lower:]' '[:upper:]')
     
-    if [[ -z "$val" ]]; then
-        echo "0.00"
-        return
-    fi
-    
     case "$unit" in
-        *GB*|*G*)
-            echo "$val" | awk '{printf "%.2f", $1 * 1024}'
+        B|BYTES)
+            echo "$val" | awk '{printf "%.2f", $1/1024/1024}'
             ;;
-        *MB*|*M*)
+        KB|KIB|K)
+            echo "$val" | awk '{printf "%.2f", $1/1024}'
+            ;;
+        MB|MIB|M)
             echo "$val" | awk '{printf "%.2f", $1}'
             ;;
-        *KB*|*K*)
-            echo "$val" | awk '{printf "%.2f", $1 / 1024}'
+        GB|GIB|G)
+            echo "$val" | awk '{printf "%.2f", $1*1024}'
             ;;
         *)
-            # Bytes
-            echo "$val" | awk '{printf "%.2f", $1 / 1024 / 1024}'
+            echo "0.00"
             ;;
     esac
 }
 
-# Monitor container resources silently (collect data only)
+get_current_resources() {
+    local container_id="$1"
+    local stats=$(docker stats "$container_id" --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}}" 2>/dev/null)
+    
+    if [ -n "$stats" ]; then
+        local cpu=$(echo "$stats" | cut -d',' -f1 | tr -d '%')
+        local mem_raw=$(echo "$stats" | cut -d',' -f2 | cut -d'/' -f1 | tr -d ' ')
+        local mem=$(to_mb "$mem_raw")
+        local block_raw=$(echo "$stats" | cut -d',' -f3)
+        local read_raw=$(echo "$block_raw" | cut -d'/' -f1 | tr -d ' ')
+        local write_raw=$(echo "$block_raw" | cut -d'/' -f2 | tr -d ' ')
+        local read_mb=$(to_mb "$read_raw")
+        local write_mb=$(to_mb "$write_raw")
+        
+        echo "$cpu,$mem,$read_mb,$write_mb"
+    else
+        echo "0.00,0.00,0.00,0.00"
+    fi
+}
+
 monitor_container() {
     local container_id="$1"
     
-    # Initialize stats file
-    echo "timestamp,cpu_percent,memory_mb,block_read_mb,block_write_mb,net_in_mb,net_out_mb" > "$STATS_FILE"
-    
     while docker ps --filter "id=$container_id" --format "{{.ID}}" | grep -q "$container_id"; do
-        # Get Docker stats
-        local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}},{{.NetIO}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B,0B / 0B,0B / 0B")
+        local stats=$(docker stats "$container_id" --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}},{{.NetIO}}" 2>/dev/null)
         
-        # Split fields
-        local cpu_raw=$(echo "$stats" | cut -d',' -f1 | sed 's/%//')
-        local mem_raw=$(echo "$stats" | cut -d',' -f2 | cut -d'/' -f1 | xargs)
-        local block_raw=$(echo "$stats" | cut -d',' -f3)
-        local net_raw=$(echo "$stats" | cut -d',' -f4)
+        if [ -n "$stats" ]; then
+            local timestamp=$(date +%s)
+            local cpu=$(echo "$stats" | cut -d',' -f1 | tr -d '%')
+            local mem_raw=$(echo "$stats" | cut -d',' -f2 | cut -d'/' -f1 | tr -d ' ')
+            local mem=$(to_mb "$mem_raw")
+            
+            local block_raw=$(echo "$stats" | cut -d',' -f3)
+            local block_read_raw=$(echo "$block_raw" | cut -d'/' -f1 | tr -d ' ')
+            local block_write_raw=$(echo "$block_raw" | cut -d'/' -f2 | tr -d ' ')
+            local block_read=$(to_mb "$block_read_raw")
+            local block_write=$(to_mb "$block_write_raw")
+            
+            local net_raw=$(echo "$stats" | cut -d',' -f4)
+            local net_in_raw=$(echo "$net_raw" | cut -d'/' -f1 | tr -d ' ')
+            local net_out_raw=$(echo "$net_raw" | cut -d'/' -f2 | tr -d ' ')
+            local net_in=$(to_mb "$net_in_raw")
+            local net_out=$(to_mb "$net_out_raw")
+            
+            echo "$timestamp,$cpu,$mem,$block_read,$block_write,$net_in,$net_out" >> "$STATS_FILE"
+        fi
         
-        # Parse Block I/O
-        local block_read_raw=$(echo "$block_raw" | cut -d'/' -f1 | xargs)
-        local block_write_raw=$(echo "$block_raw" | cut -d'/' -f2 | xargs)
-        
-        # Parse Network I/O
-        local net_in_raw=$(echo "$net_raw" | cut -d'/' -f1 | xargs)
-        local net_out_raw=$(echo "$net_raw" | cut -d'/' -f2 | xargs)
-        
-        local mem_mb=$(to_mb "$mem_raw")
-        local block_read_mb=$(to_mb "$block_read_raw")
-        local block_write_mb=$(to_mb "$block_write_raw")
-        local net_in_mb=$(to_mb "$net_in_raw")
-        local net_out_mb=$(to_mb "$net_out_raw")
-        
-        # Save to file with current timestamp
-        echo "$(date +%s),$cpu_raw,$mem_mb,$block_read_mb,$block_write_mb,$net_in_mb,$net_out_mb" >> "$STATS_FILE"
-        
-        sleep $MONITOR_INTERVAL
+        sleep "$MONITOR_INTERVAL"
     done
 }
 
-# Get current resource usage
-get_current_resources() {
-    local container_id="$1"
-    
-    # Get Docker stats
-    local stats=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}}" "$container_id" 2>/dev/null || echo "0.00%,0B / 0B,0B / 0B")
-    
-    # Split fields
-    local cpu_raw=$(echo "$stats" | cut -d',' -f1 | sed 's/%//')
-    local mem_raw=$(echo "$stats" | cut -d',' -f2 | cut -d'/' -f1 | xargs)
-    local block_raw=$(echo "$stats" | cut -d',' -f3)
-    
-    local block_read_raw=$(echo "$block_raw" | cut -d'/' -f1 | xargs)
-    local block_write_raw=$(echo "$block_raw" | cut -d'/' -f2 | xargs)
-    
-    local mem_mb=$(to_mb "$mem_raw")
-    local block_read_mb=$(to_mb "$block_read_raw")
-    local block_write_mb=$(to_mb "$block_write_raw")
-    
-    echo "${cpu_raw},${mem_mb},${block_read_mb},${block_write_mb}"
-}
-
-# Calculate and display resource summary
-show_resource_summary() {
-    if [ ! -f "$STATS_FILE" ] || [ $(wc -l < "$STATS_FILE") -le 1 ]; then
+# Calculate statistics from collected data
+calculate_stats() {
+    if [ ! -f "$STATS_FILE" ] || [ ! -s "$STATS_FILE" ]; then
+        echo "0,0,0,0,0,0,0,0,0,0,0"
         return
     fi
     
-    echo ""
-    echo -e "${BLUE}================================================================================${NC}"
-    echo -e "${BOLD}Resource Usage Summary${NC}"
-    echo -e "${BLUE}================================================================================${NC}"
-    echo ""
-    
-    # Calculate statistics using awk
-    local stats=$(awk -F',' 'NR>1 {
-        cpu_sum+=$2; cpu_count++;
-        if($2>cpu_max) cpu_max=$2;
-        if(cpu_min=="" || $2<cpu_min) cpu_min=$2;
+    awk -F',' '
+    BEGIN {
+        cpu_sum = 0; cpu_max = 0; cpu_min = 999999;
+        mem_sum = 0; mem_max = 0; mem_min = 999999;
+        first_read = -1; last_read = 0;
+        first_write = -1; last_write = 0;
+        first_net_in = -1; last_net_in = 0;
+        first_net_out = -1; last_net_out = 0;
+        start_time = 0; end_time = 0;
+        count = 0;
+    }
+    {
+        count++;
+        time = $1;
+        cpu = $2;
+        mem = $3;
+        bread = $4;
+        bwrite = $5;
+        nin = $6;
+        nout = $7;
         
-        mem_sum+=$3; mem_count++;
-        if($3>mem_max) mem_max=$3;
-        if(mem_min=="" || $3<mem_min) mem_min=$3;
+        if (count == 1) {
+            start_time = time;
+            first_read = bread;
+            first_write = bwrite;
+            first_net_in = nin;
+            first_net_out = nout;
+        }
+        end_time = time;
+        last_read = bread;
+        last_write = bwrite;
+        last_net_in = nin;
+        last_net_out = nout;
         
-        if($4>block_read_max) block_read_max=$4;
-        if($5>block_write_max) block_write_max=$5;
-        if($6>net_in_max) net_in_max=$6;
-        if($7>net_out_max) net_out_max=$7;
+        cpu_sum += cpu;
+        if (cpu > cpu_max) cpu_max = cpu;
+        if (cpu < cpu_min) cpu_min = cpu;
         
-        if(NR==2) start_time=$1;
-        end_time=$1;
+        mem_sum += mem;
+        if (mem > mem_max) mem_max = mem;
+        if (mem < mem_min) mem_min = mem;
     }
     END {
-        if(cpu_count>0) {
-            cpu_avg=cpu_sum/cpu_count;
-            mem_avg=mem_sum/mem_count;
-            duration=end_time-start_time;
-            printf "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f", 
-                cpu_avg, cpu_max, cpu_min, 
-                mem_avg, mem_max, mem_min, 
-                block_read_max, block_write_max, 
-                net_in_max, net_out_max, 
+        if (count > 0) {
+            cpu_avg = cpu_sum / count;
+            mem_avg = mem_sum / count;
+            total_bread = (last_read >= first_read) ? (last_read - first_read) : last_read;
+            total_bwrite = (last_write >= first_write) ? (last_write - first_write) : last_write;
+            total_nin = (last_net_in >= first_net_in) ? (last_net_in - first_net_in) : last_net_in;
+            total_nout = (last_net_out >= first_net_out) ? (last_net_out - first_net_out) : last_net_out;
+            duration = end_time - start_time;
+            if (duration == 0) duration = count;
+            
+            printf "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
+                cpu_avg, cpu_max, cpu_min,
+                mem_avg, mem_max, mem_min,
+                total_bread, total_bwrite,
+                total_nin, total_nout,
                 duration;
+        } else {
+            print "0,0,0,0,0,0,0,0,0,0,0";
         }
-    }' "$STATS_FILE")
-    
-    if [ -z "$stats" ]; then
-        return
-    fi
+    }
+    ' "$STATS_FILE"
+}
+
+# Display resource impact summary
+show_resource_summary() {
+    local stats=$(calculate_stats)
     
     local cpu_avg=$(echo "$stats" | cut -d',' -f1)
     local cpu_max=$(echo "$stats" | cut -d',' -f2)
@@ -322,56 +447,28 @@ show_resource_summary() {
     local net_out=$(echo "$stats" | cut -d',' -f10)
     local duration=$(echo "$stats" | cut -d',' -f11)
     
-    # Display duration
+    echo -e "${BLUE}================================================================================${NC}"
+    echo -e "${BOLD}Resource Impact Summary${NC}"
+    echo -e "${BLUE}================================================================================${NC}"
     echo -e "${BOLD}Duration: ${CYAN}${duration}${NC} seconds"
     echo ""
-    
-    # Display CPU stats
     echo -e "${BOLD}CPU Usage:${NC}"
     echo -e "   Average: ${CYAN}${cpu_avg}%${NC}"
     echo -e "   Maximum: ${CYAN}${cpu_max}%${NC}"
     echo -e "   Minimum: ${CYAN}${cpu_min}%${NC}"
-    
-    # CPU impact assessment
-    if (( $(echo "$cpu_avg > 75" | bc -l 2>/dev/null || echo 0) )); then
-        echo -e "   Impact:  ${RED}HIGH - Significant CPU usage${NC}"
-    elif (( $(echo "$cpu_avg > 40" | bc -l 2>/dev/null || echo 0) )); then
-        echo -e "   Impact:  ${YELLOW}MODERATE - Noticeable CPU usage${NC}"
-    else
-        echo -e "   Impact:  ${GREEN}LOW - Minimal CPU usage${NC}"
-    fi
-    
     echo ""
-    
-    # Display memory stats
     echo -e "${BOLD}Memory Usage:${NC}"
     echo -e "   Average: ${CYAN}${mem_avg} MB${NC}"
     echo -e "   Maximum: ${CYAN}${mem_max} MB${NC}"
     echo -e "   Minimum: ${CYAN}${mem_min} MB${NC}"
-    
-    # Memory impact assessment (mem_avg is in MB)
-    if (( $(echo "$mem_avg > 2048" | bc -l 2>/dev/null || echo 0) )); then
-        echo -e "   Impact:  ${RED}HIGH - Significant memory usage${NC}"
-    elif (( $(echo "$mem_avg > 1024" | bc -l 2>/dev/null || echo 0) )); then
-        echo -e "   Impact:  ${YELLOW}MODERATE - Noticeable memory usage${NC}"
-    else
-        echo -e "   Impact:  ${GREEN}LOW - Minimal memory usage${NC}"
-    fi
-    
     echo ""
-    
-    # Display Disk I/O volume
     echo -e "${BOLD}Disk I/O Volume:${NC}"
     echo -e "   Total Read:  ${CYAN}${block_read} MB${NC}"
     echo -e "   Total Write: ${CYAN}${block_write} MB${NC}"
-    
     echo ""
-    
-    # Display Network volume
     echo -e "${BOLD}Network Volume:${NC}"
     echo -e "   Total Received: ${CYAN}${net_in} MB${NC}"
     echo -e "   Total Sent:     ${CYAN}${net_out} MB${NC}"
-    
     echo ""
     echo -e "${BLUE}================================================================================${NC}"
     echo ""
@@ -421,8 +518,31 @@ main() {
     echo -e "${YELLOW}Starting PNG to SVG conversion container...${NC}"
     echo ""
     
+    NETWORK_ARG=""
+    if [ "$MODE" != "multi-tenant" ]; then
+        if docker network inspect sclera_bridge >/dev/null 2>&1; then
+            NETWORK_ARG="--network sclera_bridge"
+        fi
+    fi
+
+    # Build container arguments
+    CONTAINER_ARGS=()
+    CONTAINER_ARGS+=(--mode "$MODE")
+    CONTAINER_ARGS+=(--engine "$CONVERSION_ENGINE")
+    if [ "$AUTO_DETECT_ENGINE" = "true" ]; then
+        CONTAINER_ARGS+=(--auto-detect)
+    fi
+    if [ "$ENABLE_SVGO" = "false" ]; then
+        CONTAINER_ARGS+=(--disable-svgo)
+    fi
+    if [ -n "$VDMS_FILTER" ]; then
+        CONTAINER_ARGS+=(--vdms "$VDMS_FILTER")
+    fi
+    CONTAINER_ARGS+=("${PASSTHROUGH_ARGS[@]}")
+
     # Start container in background
     docker run -d --rm \
+        $NETWORK_ARG \
         --cpu-shares 128 \
         --cpus "4.0" \
         --blkio-weight 100 \
@@ -431,6 +551,8 @@ main() {
         --memory "4g" \
         --shm-size 1g \
         --name "$CONTAINER_NAME" \
+        -e MODE="$MODE" \
+        -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \
         -e API_ENDPOINT="$API_ENDPOINT" \
         -e ENABLE_SVGO="$ENABLE_SVGO" \
         -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
@@ -440,7 +562,9 @@ main() {
         -e BASE_URL="$BASE_URL" \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
         -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
-        "$IMAGE_NAME" "$@" > /dev/null
+        -e VDMS_FILTER="$VDMS_FILTER" \
+        "$IMAGE_NAME" \
+        "${CONTAINER_ARGS[@]}" > /dev/null
     
     echo -e "${GREEN}Container started: $CONTAINER_NAME${NC}"
     echo -e "${YELLOW}Monitoring resources in real-time...${NC}"
@@ -515,5 +639,3 @@ main() {
 
 # Run main function
 main "$@"
-
-
