@@ -14,7 +14,6 @@ flatbuffers==25.12.19
 idna==3.16
 numpy==2.3.5
 omegaconf==2.3.0
-onnxruntime==1.26.0
 opencv-python==4.13.0.92
 packaging==26.2
 pillow==12.2.0
@@ -27,4 +26,5 @@ shapely==2.1.2
 six==1.17.0
 tqdm==4.67.3
 urllib3==2.7.0
+pyvips
 vtracer

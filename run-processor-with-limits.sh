@@ -42,6 +42,7 @@ export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
+export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
 
 # Colors
 RED='\033[0;31m'
@@ -153,6 +154,7 @@ run_single_benchmark() {
         -e BASE_URL="$BASE_URL" \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
         -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
+        -e OCR_ENGINE="$OCR_ENGINE" \
         "$IMAGE_NAME" "$@")
 
     # Start monitor in background

@@ -35,6 +35,7 @@ export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
+export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
 
 
 echo "================================================================================"
@@ -45,6 +46,7 @@ echo "Output directory: $SVG_OUTPUT_DIR"
 echo "API Endpoint:     $API_ENDPOINT"
 echo "Conversion engine: $CONVERSION_ENGINE"
 echo "Auto-detect engine: $AUTO_DETECT_ENGINE"
+echo "OCR engine:       $OCR_ENGINE"
 echo "================================================================================"
 echo ""
 
@@ -82,8 +84,6 @@ echo ""
 docker run --rm \
     --cpus "2.0" \
     --memory "4g" \
-    --blkio-weight 100 \
-    --oom-score-adj 1000 \
     --network sclera_bridge \
     --name "png-processor-api-$(date +%s)" \
     -e API_ENDPOINT="$API_ENDPOINT" \
@@ -95,6 +95,7 @@ docker run --rm \
     -e BASE_URL="$BASE_URL" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
     -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
+    -e OCR_ENGINE="$OCR_ENGINE" \
     "$IMAGE_NAME" "$@"
 
 # Check results

@@ -35,6 +35,7 @@ export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
+export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
 
 
 
@@ -440,6 +441,7 @@ main() {
         -e BASE_URL="$BASE_URL" \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
         -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
+        -e OCR_ENGINE="$OCR_ENGINE" \
         "$IMAGE_NAME" "$@" > /dev/null
     
     echo -e "${GREEN}Container started: $CONTAINER_NAME${NC}"

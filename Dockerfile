@@ -29,6 +29,7 @@ RUN apt-get update \
   libx11-6 \
   libxrender1 \
   libxext6 \
+  libvips42 \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
@@ -76,25 +77,35 @@ RUN POLICY_FILE="" && \
 # Create directories for processing
 RUN mkdir -p /home/sclera/images/png_floors /home/sclera/images/svg_floors
 
+# Build argument to select OCR engine (onnxruntime or openvino) to minimize image size
+ARG OCR_ENGINE=onnxruntime
+ENV OCR_ENGINE=${OCR_ENGINE}
+ENV OCR_ENGINE_TYPE=${OCR_ENGINE}
+
 # Copy requirements and install Python dependencies
 COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "${OCR_ENGINE}" = "openvino" ]; then \
+         echo "Installing OpenVINO engine..." && \
+         pip install --no-cache-dir openvino; \
+       else \
+         echo "Installing ONNXRuntime engine..." && \
+         pip install --no-cache-dir onnxruntime==1.26.0; \
+       fi
 
-# Pre-download RapidOCR models to avoid runtime permission and download latency issues
-RUN python -c "from rapidocr import RapidOCR, OCRVersion, EngineType, ModelType, LangDet, LangCls, LangRec; \
+# Pre-download RapidOCR models for selected OCR engine to avoid runtime permission and download latency issues
+RUN python -c "from rapidocr import RapidOCR, OCRVersion, EngineType, ModelType; \
+import os; \
+engine = EngineType.OPENVINO if os.getenv('OCR_ENGINE', '').lower() == 'openvino' else EngineType.ONNXRUNTIME; \
 RapidOCR(params={ \
-    'Det.ocr_version': OCRVersion.PPOCRV5, \
-    'Det.engine_type': EngineType.ONNXRUNTIME, \
-    'Det.model_type': ModelType.MOBILE, \
-    'Det.lang_type': LangDet.CH, \
-    'Cls.ocr_version': OCRVersion.PPOCRV5, \
-    'Cls.engine_type': EngineType.ONNXRUNTIME, \
+    'Det.ocr_version': OCRVersion.PPOCRV6, \
+    'Det.engine_type': engine, \
+    'Det.model_type': ModelType.SMALL, \
+    'Cls.engine_type': engine, \
     'Cls.model_type': ModelType.MOBILE, \
-    'Cls.lang_type': LangCls.CH, \
-    'Rec.ocr_version': OCRVersion.PPOCRV5, \
-    'Rec.engine_type': EngineType.ONNXRUNTIME, \
-    'Rec.model_type': ModelType.MOBILE, \
-    'Rec.lang_type': LangRec.EN, \
+    'Rec.ocr_version': OCRVersion.PPOCRV6, \
+    'Rec.engine_type': engine, \
+    'Rec.model_type': ModelType.SMALL, \
 })"
 
 # Copy SVGO v3+ configuration
