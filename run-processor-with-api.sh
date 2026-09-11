@@ -100,10 +100,9 @@ docker run --rm \
     $NETWORK_ARG \
     --cpu-shares 128 \
     --cpus "4.0" \
-    --memory-reservation "512m" \
-    --oom-score-adj 1000 \
+    --memory-reservation "3g" \
     --memory "4g" \
-    --shm-size 1g \
+    --memory-swap "8g" \
     --name "png-processor-api-$(date +%s)" \
     -e MODE="$MODE" \
     -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \
@@ -124,21 +123,21 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Processing completed successfully!"
     
-        # Count and show results
-        SVG_COUNT=$(find "$SVG_OUTPUT_DIR" -name "*.svg" -type f 2>/dev/null | wc -l)
-        echo "Total SVG files in output directory: $SVG_COUNT"
-        
-        if [ "$SVG_COUNT" -gt 0 ]; then
-            echo ""
-            echo "Generated files:"
-            ls -lh "$SVG_OUTPUT_DIR"/*.svg 2>/dev/null | tail -10
-            if [ "$SVG_COUNT" -gt 10 ]; then
-                echo "   ... showing last 10 of $SVG_COUNT files"
-            fi
-            
-            echo ""
-            echo "Files are ready in: $SVG_OUTPUT_DIR"
+    # Count and show results
+    SVG_COUNT=$(find "$SVG_OUTPUT_DIR" -name "*.svg" -type f 2>/dev/null | wc -l)
+    echo "Total SVG files in output directory: $SVG_COUNT"
+    
+    if [ "$SVG_COUNT" -gt 0 ]; then
+        echo ""
+        echo "Generated files:"
+        ls -lh "$SVG_OUTPUT_DIR"/*.svg 2>/dev/null | tail -10
+        if [ "$SVG_COUNT" -gt 10 ]; then
+            echo "   ... showing last 10 of $SVG_COUNT files"
         fi
+        
+        echo ""
+        echo "Files are ready in: $SVG_OUTPUT_DIR"
+    fi
 else
     echo ""
     echo "Processing failed. Check the error messages above."

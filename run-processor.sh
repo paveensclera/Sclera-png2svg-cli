@@ -74,6 +74,11 @@ echo ""
 
 # Run the processing container
 docker run --rm \
+    --cpu-shares 128 \
+    --cpus "4.0" \
+    --memory-reservation "3g" \
+    --memory "4g" \
+    --memory-swap "8g" \
     --name "png-processor-$(date +%s)" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
@@ -104,8 +109,9 @@ if [ $? -eq 0 ]; then
     fi
 else
     echo ""
-    echo "Processing failed. Check the error messages above."
-    exit 1
+    echo "Processing failed (Exit Code: $EXIT_CODE)."
+    echo "Check output logs in $SVG_OUTPUT_DIR/all_logs.log or failed_files.log."
+    exit $EXIT_CODE
 fi
 
 echo ""

@@ -6,6 +6,7 @@ import traceback
 import requests
 import re
 import json
+import gc
 from datetime import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -191,9 +192,9 @@ def determine_engine(img=None, default_engine: str = None) -> str:
     return base_engine
 
 
-TEMP_DIR = Path("/tmp/floor_map_processing")
+TEMP_DIR = Path(os.getenv("TEMP_DIR", "/tmp/floor_map_processing"))
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
-SHM_DIR = Path("/dev/shm") if Path("/dev/shm").exists() else TEMP_DIR
+SHM_DIR = TEMP_DIR  # Disk-backed temporary directory (replacing /dev/shm)
 
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1268,7 +1269,7 @@ def process_local_files(filter_filenames: list = None):
 
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
             img = remove_txt(img, detections)
-            temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
+            temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
@@ -1355,6 +1356,11 @@ def process_local_files(filter_filenames: list = None):
                     logger.warning(
                         f"   Failed to delete temp file {temp_png}: {cleanup_err}"
                     )
+            try:
+                del orig_img, img, detections, resultant_svg_content
+            except Exception:
+                pass
+            gc.collect()
     overall_end = time.perf_counter()
 
     print()
@@ -1554,7 +1560,7 @@ def process_filtered_files(filter_filenames: list = None):
 
             img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
             img = remove_txt(img, detections)
-            temp_png = SHM_DIR / f"{png_path.stem}_notext.png"
+            temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
 
             cv.imwrite(str(temp_png), img)
 
@@ -1650,6 +1656,11 @@ def process_filtered_files(filter_filenames: list = None):
                     logger.warning(
                         f"   Failed to delete temp file {temp_png}: {cleanup_err}"
                     )
+            try:
+                del orig_img, img, detections, resultant_svg_content
+            except Exception:
+                pass
+            gc.collect()
     overall_end = time.perf_counter()
 
     print()
@@ -1830,8 +1841,8 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     conversion_failed_count += 1
                     continue
 
-                # Temporary storage in memory/tmp for OCR & conversion
-                temp_png_path = SHM_DIR / f"{image_id}_temp.png"
+                # Temporary storage on disk for OCR & conversion
+                temp_png_path = TEMP_DIR / f"{image_id}_temp.png"
                 temp_png_path.write_bytes(png_bytes)
 
                 orig_img = cv.imread(str(temp_png_path))
@@ -1943,6 +1954,11 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                         logger.warning(
                             f"Failed to delete temp file {temp_notext_png}: {cleanup_err}"
                         )
+                try:
+                    del png_bytes, orig_img, img, detections, resultant_svg_content
+                except Exception:
+                    pass
+                gc.collect()
 
     overall_end = time.perf_counter()
 
