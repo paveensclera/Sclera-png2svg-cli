@@ -543,13 +543,8 @@ main() {
     # Start container in background
     docker run -d --rm \
         $NETWORK_ARG \
-        --cpu-shares 128 \
         --cpus "4.0" \
-        --blkio-weight 100 \
-        --memory-reservation "512m" \
-        --oom-score-adj 1000 \
         --memory "4g" \
-        --shm-size 1g \
         --name "$CONTAINER_NAME" \
         -e MODE="$MODE" \
         -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \

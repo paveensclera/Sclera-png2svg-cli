@@ -243,12 +243,8 @@ CONTAINER_ARGS+=("${PASSTHROUGH_ARGS[@]}")
 echo "Starting PNG processing container..."
 docker run --rm \
     $NETWORK_ARG \
-    --cpu-shares 128 \
-    --cpus "4.0" \
-    --memory-reservation "512m" \
-    --oom-score-adj 1000 \
+    --cpus "2.0" \
     --memory "4g" \
-    --shm-size 1g \
     --name "png-processor-$(date +%s)" \
     -e MODE="$MODE" \
     -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \

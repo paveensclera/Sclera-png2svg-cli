@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import xml.etree.ElementTree as ET
+import gc
 
 # ----------- Environment Configuration -----------
 system_threads = os.cpu_count() or 4
@@ -149,7 +150,9 @@ def remove_noise(img, min_area=DESPECKLE_AREA):
     label_map = np.zeros(num_labels, dtype=np.uint8)
     label_map[areas >= min_area] = 255
     label_map[0] = 0 
-    return label_map[labels]
+    cleaned = label_map[labels]
+    del labels, stats, areas, label_map
+    return cleaned
 
 
 def estimate_optimal_tile_params(binary):
@@ -238,13 +241,19 @@ def recognize_txt(image_path, ocr, engine=None):
     """Pre-processes image and runs RapidOCR in overlapping grids."""
     engine = (engine or os.getenv("CONVERSION_ENGINE", "potrace")).lower()
     img, w, h = load_image(image_path)
-    process_img = remove_noise(cv.erode(remove_thin_lines(binarize_image(img), thickness=2), np.ones((2, 2), np.uint8), iterations=1))
     
-    tile_size, overlap = estimate_optimal_tile_params(process_img)
-    process_img = cv.cvtColor(cv.bitwise_not(process_img), cv.COLOR_GRAY2BGR)
+    # Step-by-step processing with immediate intermediate cleanup
+    binary = binarize_image(img)
+    clean_lines = remove_thin_lines(binary, thickness=2)
+    del binary
+    eroded = cv.erode(clean_lines, np.ones((2, 2), np.uint8), iterations=1)
+    del clean_lines
+    noise_removed = remove_noise(eroded)
+    del eroded
 
-    #side_len = max(w, h)
-    #update_side_len(ocr, side_len)
+    tile_size, overlap = estimate_optimal_tile_params(noise_removed)
+    process_img = cv.cvtColor(cv.bitwise_not(noise_removed), cv.COLOR_GRAY2BGR)
+    del noise_removed
     
     detections = []
     tile_count = skipped_count = total_runs = 0
@@ -354,6 +363,7 @@ def remove_txt(img, detections, output=None, min_wall_length=80):
     del structural_map, gray 
     if output:
         cv.imwrite(output, img)
+    gc.collect()
     return img
 
 
