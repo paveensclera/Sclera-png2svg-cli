@@ -152,6 +152,7 @@ export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
+export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
 export VDMS_FILTER="${VDMS_FILTER:-}"
 
 echo "================================================================================"
@@ -254,6 +255,7 @@ docker run --rm \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
     -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
+    -e OCR_ENGINE="$OCR_ENGINE" \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \

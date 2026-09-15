@@ -1,45 +1,58 @@
 import os
-import re
+
+system_threads = os.cpu_count() or 1
+CPU_THREADS = min(8, max(1, system_threads))
+os.environ["OMP_NUM_THREADS"] = str(CPU_THREADS)
+os.environ["MKL_NUM_THREADS"] = str(CPU_THREADS)
+os.environ["OPENBLAS_NUM_THREADS"] = str(CPU_THREADS)
+os.environ["VECLIB_MAXIMUM_THREADS"] = str(CPU_THREADS)
+os.environ["NUMEXPR_NUM_THREADS"] = str(CPU_THREADS)
+
+import sys
+import math
+import random
+import argparse
 import logging
+import re
 import xml.etree.ElementTree as ET
-import gc
-
-# ----------- Environment Configuration -----------
-system_threads = os.cpu_count() or 4
-CPU_THREADS = max(1, (system_threads // 2) - 2)
-if CPU_THREADS:
-    os.environ["OMP_NUM_THREADS"] = str(CPU_THREADS)
-    os.environ["MKL_NUM_THREADS"] = str(CPU_THREADS)
-    os.environ["OPENBLAS_NUM_THREADS"] = str(CPU_THREADS)
-    os.environ["VECLIB_MAXIMUM_THREADS"] = str(CPU_THREADS)
-    os.environ["NUMEXPR_NUM_THREADS"] = str(CPU_THREADS)
-
+from pathlib import Path
+from typing import Any, Optional, Union
 import cv2 as cv
 import numpy as np
-from rapidocr import RapidOCR, OCRVersion, EngineType, ModelType, LangDet, LangCls, LangRec
+
+try:
+    import pyvips
+    # Suppress pyvips logs
+    logging.getLogger("pyvips").setLevel(logging.WARNING)
+except ImportError:
+    pyvips = None
+
+from rapidocr import RapidOCR, OCRVersion, EngineType, ModelType
 from rapidocr.utils.log import logger as rapidocr_logger
 
-# Disable RapidOCR verbose logging
+# Suppress model downloading/loading logs
 rapidocr_logger.setLevel(logging.ERROR)
 for handler in rapidocr_logger.handlers:
     handler.setLevel(logging.ERROR)
-    
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 logger = logging.getLogger(__name__)
 
-# ----------- OCR & Processing Parameters -----------
-TILE_SIZE = 2000          # Default tile window size in pixels
-OVERLAP = 300             # Overlap between tiles in pixels
-INK_THRESHOLD = 0.005     # Minimum ratio of ink pixels in a tile to run OCR
-SCORE_THRESHOLD = 0.7     # Minimum confidence score for a valid detection
-IOU_THRESHOLD = 0.3       # Threshold for allowing overlap between two bounding boxes
-RESIZE_LIMIT = 4000       # Resize limit for the final SVG output
-THIN_LINES_THICKNESS = 2  # Thickness for removing thin lines during pre-processing
-DESPECKLE_AREA = 15       # Minimum area for removing small noise speckles
-CLUSTER_MAX_SIZE = 2000   # Maximum size for clustered crops to the OCR engine
-CLUSTER_MARGIN = 300      # Margin for clustering nearby text regions
-CROP_PADDING = 50         # Additional padding around crop regions
-# USE_CUDA = False        # GPU toggle (requires onnxruntime-gpu)
+
+# --- CONFIGURATION DEFAULTS ---
+CELL_SIZE = 500
+DOWNSAMPLE_FACTOR = 16
+MAX_TILE_SIZE = 4000
+TILE_PADDING = 30
+
+POLY_EDGE_THRESHOLD = 30
+POLY_PADDING = 20
+
+RESIZE_LIMIT = 4000
 
 
 def calculate_iou(box1, box2):
@@ -62,255 +75,736 @@ def calculate_iou(box1, box2):
     return intersection / float(area1 + area2 - intersection)
 
 
-def clean_text(text):
+def clean_text(text: str) -> str:
     """Cleans recognized text by removing special characters and trimming whitespace."""
+    if not text:
+        return ""
     text = "".join(c for c in text if (32 <= ord(c) <= 126) or (ord(c) == 176)).strip()
     text = text.replace("$", "S").replace("|", "I").replace("=", "")
-    text = re.sub(r'^[\.,:;\-]+', '', text)
-    text = re.sub(r'[\.,:;\-]+$', '', text)
+    text = text.strip(".,:;_-")
+    if len(text) == 1 and not (text.isalnum() or text == "°"):
+        return ""
     return text.strip()
-
-
-def filter_detections(detections):
-    """Filters out detections below the confidence score threshold or duplicates."""
-    detections = sorted(detections, key=lambda x: x["score"], reverse=True)
-    n = len(detections)
-    keep = [True] * n
-    texts = [d["text"].lower() for d in detections]
-    lengths = [len(t) for t in texts]
-    
-    for i in range(n):
-        if not keep[i]:
-            continue
-            
-        box1 = detections[i]["box"]
-        t1, len1, score1 = texts[i], lengths[i], detections[i]["score"]
-        
-        for j in range(i + 1, n):
-            if not keep[j]:
-                continue
-                
-            box2 = detections[j]["box"]
-            t2, len2, score2 = texts[j], lengths[j], detections[j]["score"]
-            
-            iou = calculate_iou(box1, box2)
-            has_overlap = iou > IOU_THRESHOLD
-            is_substring = (t1 in t2 or t2 in t1)
-            
-            # If texts are substrings and overlap, keep the longer one
-            if is_substring and iou > 0:
-                if len1 >= len2:
-                    keep[j] = False
-                else:
-                    keep[i] = False
-                    break
-            # If not substrings but significant overlap, keep higher score
-            elif has_overlap:
-                if score1 >= score2:
-                    keep[j] = False
-                else:
-                    keep[i] = False
-                    break
-
-    return [d for i, d in enumerate(detections) if keep[i]]
 
 
 def load_image(path):
     """Loads image from path and returns it with width and height."""
-    img = cv.imread(path)
+    img = cv.imread(str(path))
     if img is None:
         raise ValueError(f"Could not read image: {path}")
     h, w = img.shape[:2]
     return img, w, h
 
 
-def binarize_image(img):
-    """Converts image to binary. Colored darker backgrounds are ignored."""
-    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    if len(img.shape) == 3 and img.shape[2] == 3:
-        hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-        _, s, v = cv.split(hsv)
-        gray[(s > 8) & (v > 100)] = 255
-        
-    _, binary = cv.threshold(gray, 127, 255, cv.THRESH_BINARY_INV) 
-    return binary
+def init_ocr_engine(
+    engine_type: Optional[EngineType] = None,
+    threads: int = CPU_THREADS,
+) -> RapidOCR:
+    """Initializes and returns an optimized RapidOCR instance."""
+    env_engine = (os.getenv("OCR_ENGINE_TYPE") or os.getenv("OCR_ENGINE") or "").lower()
+    if env_engine == "openvino":
+        engine_type = EngineType.OPENVINO
+    elif env_engine == "onnxruntime":
+        engine_type = EngineType.ONNXRUNTIME
+    elif env_engine != "":
+        raise ValueError(f"Invalid OCR engine type: {env_engine}. Please set OCR_ENGINE to 'openvino' or 'onnxruntime'.")
+    elif engine_type is None:
+        try:
+            import openvino  # noqa: F401
+            engine_type = EngineType.OPENVINO
+        except ImportError:
+            engine_type = EngineType.ONNXRUNTIME
 
+    params = {
+        "Global.text_score": 0.5,
+        "Global.use_cls": True,
+        "Det.ocr_version": OCRVersion.PPOCRV6,
+        "Det.engine_type": engine_type,
+        "Det.model_type": ModelType.SMALL,
+        "Det.thresh": 0.3,
+        "Det.box_thresh": 0.3,
+        "Det.unclip_ratio": 1.2,
+        "Cls.engine_type": engine_type,
+        "Cls.model_type": ModelType.MOBILE,
+        "Rec.ocr_version": OCRVersion.PPOCRV6,
+        "Rec.engine_type": engine_type,
+        "Rec.model_type": ModelType.SMALL,
+    }
 
-def remove_thin_lines(img, thickness=THIN_LINES_THICKNESS):
-    """Removes thin lines from floormaps to improve text detections."""
-    kernel = np.ones((thickness, thickness), np.uint8)
-    return cv.morphologyEx(img, cv.MORPH_OPEN, kernel)
-
-
-def remove_noise(img, min_area=DESPECKLE_AREA):
-    """Removes small speckles of noise left out from binarization."""
-    num_labels, labels, stats, _ = cv.connectedComponentsWithStats(img, connectivity=8)
-    areas = stats[:, cv.CC_STAT_AREA]
-    
-    label_map = np.zeros(num_labels, dtype=np.uint8)
-    label_map[areas >= min_area] = 255
-    label_map[0] = 0 
-    cleaned = label_map[labels]
-    del labels, stats, areas, label_map
-    return cleaned
-
-
-def estimate_optimal_tile_params(binary):
-    """Performs a fast pre-scan on a downscaled binary to estimate median text height."""
-    h, w = binary.shape
-    scale = 8
-    h_small, w_small = h // scale, w // scale
-    
-    if h_small > 0 and w_small > 0:
-        small_binary = cv.resize(binary, (w_small, h_small), interpolation=cv.INTER_NEAREST)            
-        dilated = cv.dilate(small_binary, np.ones((3, 3), np.uint8), iterations=1)
-        
-        _, _, stats, _ = cv.connectedComponentsWithStats(dilated, connectivity=8)
-        
-        widths = stats[1:, cv.CC_STAT_WIDTH] * scale
-        heights = stats[1:, cv.CC_STAT_HEIGHT] * scale
-        
-        valid_mask = (heights > 0)
-        widths, heights = widths[valid_mask], heights[valid_mask]
-        aspect = widths / heights
-        
-        valid_text_mask = (
-            (heights >= 8) & (heights <= 120) &
-            (widths >= 8) & (widths <= 2000) &
-            (aspect >= 0.2) & (aspect <= 100.0)
+    if engine_type == EngineType.OPENVINO:
+        params.update(
+            {
+                "EngineConfig.openvino.performance_hint": "LATENCY",
+                "EngineConfig.openvino.num_streams": 1,
+                "EngineConfig.openvino.performance_num_requests": 1,
+                "EngineConfig.openvino.inference_num_threads": threads,
+                "EngineConfig.openvino.enable_cpu_pinning": "YES",
+            }
         )
-        
-        valid_heights = heights[valid_text_mask]
-        
-        if len(valid_heights) > 0:
-            median_height = np.median(valid_heights)
-            
-            if median_height > 70:
-                tile_size = 3000
-            elif median_height > 50:
-                tile_size = 2500
-            else:
-                tile_size = 2000
-            
-            overlap = int(median_height * 8)
-            overlap = max(300, min(overlap, 500))
-            
-            return tile_size, overlap
-            
-    logger.warning("Could not estimate text scale. Falling back to tile_size=3000, overlap=300")
-    return 3000, 300
 
+    elif engine_type == EngineType.ONNXRUNTIME:
+        params.update(
+            {
+                "EngineConfig.onnxruntime.use_cuda": False,
+                "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+                "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+            }
+        )
 
-def init_ocr_engine():
-    """Initializes the RapidOCR engine with specified parameters."""
-    ocr = RapidOCR(
-        params={
-            "Global.text_score": SCORE_THRESHOLD,
-            # "Global.max_side_len": 4096,
-            "Det.ocr_version": OCRVersion.PPOCRV6,
-            "Det.engine_type": EngineType.ONNXRUNTIME,
-            "Det.model_type": ModelType.SMALL,
-            # "Det.lang_type": LangDet.CH,
-            # "Det.limit_side_len": 4096,
-            "Det.limit_type": "max",
-            "Det.box_thresh": 0.3,
-            "Det.unclip_ratio": 1.8,
-            # "Cls.ocr_version": OCRVersion.PPOCRV6,
-            "Cls.engine_type": EngineType.ONNXRUNTIME,
-            "Cls.model_type": ModelType.MOBILE,
-            # "Cls.lang_type": LangCls.CH,
-            "Rec.ocr_version": OCRVersion.PPOCRV6,
-            "Rec.engine_type": EngineType.ONNXRUNTIME,
-            "Rec.model_type": ModelType.SMALL,
-            # "Rec.lang_type": LangRec.EN,
-            "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
-            "EngineConfig.onnxruntime.intra_op_num_threads": CPU_THREADS,
-            "EngineConfig.onnxruntime.inter_op_num_threads": 1,
-        }
+    logger.info(
+        f"Initializing RapidOCR (PP-OCRv6 Small) with {engine_type.name} engine ({threads} threads)..."
     )
-    logger.info(f"[OCR] RapidOCR engine initialized | threads={CPU_THREADS}")
-    return ocr
 
-# def update_side_len(ocr, side_len):
-#     ocr.update_params(
-#         max_side_len=side_len,
-#         limit_side_len=side_len
-#     )
+    return RapidOCR(params=params)
 
-def recognize_txt(image_path, ocr, engine=None):
-    """Pre-processes image and runs RapidOCR in overlapping grids."""
-    engine = (engine or os.getenv("CONVERSION_ENGINE", "potrace")).lower()
-    img, w, h = load_image(image_path)
-    
-    # Step-by-step processing with immediate intermediate cleanup
-    binary = binarize_image(img)
-    clean_lines = remove_thin_lines(binary, thickness=2)
-    del binary
-    eroded = cv.erode(clean_lines, np.ones((2, 2), np.uint8), iterations=1)
-    del clean_lines
-    noise_removed = remove_noise(eroded)
-    del eroded
 
-    tile_size, overlap = estimate_optimal_tile_params(noise_removed)
-    process_img = cv.cvtColor(cv.bitwise_not(noise_removed), cv.COLOR_GRAY2BGR)
-    del noise_removed
-    
-    detections = []
-    tile_count = skipped_count = total_runs = 0
+class FloorMapOCR:
+    def __init__(self, ocr_engine: Optional[RapidOCR] = None):
+        self.ocr_engine = ocr_engine if ocr_engine is not None else init_ocr_engine()
 
-    y = 0
-    while y < h:
-        ymin, ymax = y, min(y + tile_size, h)
-        x = 0
-        while x < w:
-            xmin, xmax = x, min(x + tile_size, w)
-            total_runs += 1
+    def _generate_grid(
+        self, img: Union["pyvips.Image", np.ndarray], cell_size: int = CELL_SIZE
+    ) -> tuple[np.ndarray, int, int]:
+        """
+        Generates an occupancy grid representing active text/geometry cells using
+        fast downsampling and Sobel edge detection.
+        """
+        if pyvips is not None and isinstance(img, pyvips.Image):
+            img_w, img_h = img.width, img.height
+            lowres = img.shrink(DOWNSAMPLE_FACTOR, DOWNSAMPLE_FACTOR)
 
-            tile_bin_gray = cv.cvtColor(process_img[ymin:ymax, xmin:xmax], cv.COLOR_BGR2GRAY)
-            total = tile_bin_gray.size
-            ink_pixels = total - cv.countNonZero(tile_bin_gray)
-            
-            if total == 0 or (ink_pixels / float(total)) <= INK_THRESHOLD:
-                x += tile_size - overlap
-                skipped_count += 1
+            if lowres.hasalpha():
+                lowres = lowres.flatten(background=[255, 255, 255])
+
+            gray = lowres.colourspace("grey16") if lowres.bands == 3 else lowres
+            mask = gray.sobel() > 12
+
+            mask_np = mask.numpy()
+        else:
+            if isinstance(img, np.ndarray):
+                img_bgr = img
+            else:
+                img_bgr = np.array(img)
+            img_h, img_w = img_bgr.shape[:2]
+            small_w = max(1, img_w // DOWNSAMPLE_FACTOR)
+            small_h = max(1, img_h // DOWNSAMPLE_FACTOR)
+            small = cv.resize(img_bgr, (small_w, small_h), interpolation=cv.INTER_AREA)
+            gray = cv.cvtColor(small, cv.COLOR_BGR2GRAY) if small.ndim == 3 and small.shape[2] == 3 else small
+            grad_x = cv.Sobel(gray, cv.CV_16S, 1, 0)
+            grad_y = cv.Sobel(gray, cv.CV_16S, 0, 1)
+            sobel = cv.addWeighted(cv.convertScaleAbs(grad_x), 0.5, cv.convertScaleAbs(grad_y), 0.5, 0)
+            mask_np = (sobel > 12).astype(np.uint8)
+
+        cols = math.ceil(img_w / cell_size)
+        rows = math.ceil(img_h / cell_size)
+        resized_mask = cv.resize(mask_np, (cols, rows), interpolation=cv.INTER_AREA)
+
+        grid = (resized_mask > 0).astype(np.uint8)
+
+        padded = np.pad(grid, pad_width=1, mode="constant", constant_values=0)
+        cv.morphologyEx(
+            padded, cv.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), dst=padded
+        )
+        grid = padded[1:-1, 1:-1]
+
+        cw = math.ceil(img_w / cols)
+        ch = math.ceil(img_h / rows)
+
+        return grid, cw, ch
+
+    def _generate_tiles(
+        self,
+        grid: np.ndarray,
+        cw: int,
+        ch: int,
+        img_w: int,
+        img_h: int,
+    ) -> list[tuple[int, int, int, int]]:
+        """Decomposes the occupancy grid into padded macro-tiles."""
+        tiles = []
+        active_rows, active_cols = np.where(grid != 0)
+        if len(active_rows) == 0:
+            return []
+
+        start_row, end_row = int(active_rows.min()), int(active_rows.max() + 1)
+        start_col, end_col = int(active_cols.min()), int(active_cols.max() + 1)
+
+        tile_w = max(1, MAX_TILE_SIZE // cw)
+        tile_h = max(1, MAX_TILE_SIZE // ch)
+
+        for r in range(start_row, end_row, tile_h):
+            for c in range(start_col, end_col, tile_w):
+                r_end = min(r + tile_h, end_row)
+                c_end = min(c + tile_w, end_col)
+
+                sub = grid[r:r_end, c:c_end]
+                if not np.any(sub):
+                    continue
+
+                if np.all(sub):
+                    raw_x1 = c * cw
+                    raw_y1 = r * ch
+                    raw_x2 = min(c_end * cw, img_w)
+                    raw_y2 = min(r_end * ch, img_h)
+
+                    x1 = max(0, raw_x1 - TILE_PADDING)
+                    y1 = max(0, raw_y1 - TILE_PADDING)
+                    x2 = min(img_w, raw_x2 + TILE_PADDING)
+                    y2 = min(img_h, raw_y2 + TILE_PADDING)
+
+                    tiles.append((x1, y1, x2, y2))
+                else:
+                    contours, _ = cv.findContours(
+                        sub.astype(np.uint8), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE
+                    )
+                    for cnt in contours:
+                        bx, by, bw, bh = cv.boundingRect(cnt)
+
+                        raw_x1 = (c + bx) * cw
+                        raw_y1 = (r + by) * ch
+                        raw_x2 = min(raw_x1 + (bw * cw), img_w)
+                        raw_y2 = min(raw_y1 + (bh * ch), img_h)
+
+                        x1 = max(0, raw_x1 - TILE_PADDING)
+                        y1 = max(0, raw_y1 - TILE_PADDING)
+                        x2 = min(img_w, raw_x2 + TILE_PADDING)
+                        y2 = min(img_h, raw_y2 + TILE_PADDING)
+
+                        if (x2 - x1) >= 32 and (y2 - y1) >= 32:
+                            tiles.append((x1, y1, x2, y2))
+
+        return tiles
+
+    @staticmethod
+    def _apply_nms(
+        detections: list[dict[str, Any]],
+        iou_thresh: float = 0.35,
+        iomin_thresh: float = 0.65,
+    ) -> list[dict[str, Any]]:
+        """
+        Applies Non-Maximum Suppression to the list of detections. Prioritizes larger bounding box areas to
+        retain complete words/labels over partial fragment detections from overlapping tiles.
+        """
+        if not detections:
+            return []
+
+        boxes_xywh = []
+        areas = []
+        scores = []
+        xyxy_list = []
+
+        for d in detections:
+            poly = np.array(d["poly"])
+            x_min = int(np.min(poly[:, 0]))
+            y_min = int(np.min(poly[:, 1]))
+            x_max = int(np.max(poly[:, 0]))
+            y_max = int(np.max(poly[:, 1]))
+            w = max(1, x_max - x_min)
+            h = max(1, y_max - y_min)
+            area = w * h
+
+            boxes_xywh.append([x_min, y_min, w, h])
+            xyxy_list.append((x_min, y_min, x_max, y_max))
+            areas.append(area)
+            scores.append(float(d.get("score", 0.0)))
+
+        # Sort score weighting: prioritize area, break ties with confidence score
+        nms_scores = [
+            float(areas[i] * (1.0 + scores[i])) for i in range(len(detections))
+        ]
+
+        indices = cv.dnn.NMSBoxes(
+            bboxes=boxes_xywh,
+            scores=nms_scores,
+            score_threshold=0.0,
+            nms_threshold=iou_thresh,
+        )
+
+        if len(indices) == 0:
+            return []
+
+        kept_indices = np.array(indices).flatten().tolist()
+
+        # Containment filter: If a smaller box is largely inside an already-kept larger box
+        kept_indices.sort(key=lambda idx: areas[idx], reverse=True)
+        final_kept = []
+        kept_boxes = []
+
+        for idx in kept_indices:
+            x1, y1, x2, y2 = xyxy_list[idx]
+            area = areas[idx]
+            suppressed = False
+
+            for kx1, ky1, kx2, ky2, karea in kept_boxes:
+                ix1 = max(x1, kx1)
+                iy1 = max(y1, ky1)
+                ix2 = min(x2, kx2)
+                iy2 = min(y2, ky2)
+
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    if inter / min(area, karea) > iomin_thresh:
+                        suppressed = True
+                        break
+
+            if not suppressed:
+                final_kept.append(idx)
+                kept_boxes.append((x1, y1, x2, y2, area))
+
+        return [detections[i] for i in final_kept]
+
+    def _convert_to_bgr(self, img: Union["pyvips.Image", np.ndarray]) -> np.ndarray:
+        """
+        Converts a pyvips image or ndarray to a BGR numpy array with proper alpha flattening.
+        """
+        if pyvips is not None and isinstance(img, pyvips.Image):
+            if img.hasalpha():
+                img = img.flatten(background=[255, 255, 255])
+
+            if img.bands == 1:
+                img = img.colourspace("srgb")
+            elif img.bands > 3:
+                img = img.extract_band(0, n=3)
+
+            img_np = img.numpy()
+            if img_np.ndim == 3 and img_np.shape[2] == 3:
+                img_bgr = cv.cvtColor(img_np, cv.COLOR_RGB2BGR)
+            else:
+                img_bgr = cv.cvtColor(img_np, cv.COLOR_GRAY2BGR)
+
+            return np.ascontiguousarray(img_bgr)
+        elif isinstance(img, np.ndarray):
+            if img.ndim == 2:
+                return cv.cvtColor(img, cv.COLOR_GRAY2BGR)
+            elif img.ndim == 3 and img.shape[2] == 4:
+                return cv.cvtColor(img, cv.COLOR_BGRA2BGR)
+            return img
+        return np.array(img)
+
+    def _clean_detection(self, text: str) -> str:
+        """
+        Cleans detected text by removing special characters, stripping spaces and normalizing the text.
+        """
+        return clean_text(text)
+
+    def _is_touching_tile_edge(
+        self, poly: np.ndarray, tile: tuple[int, int, int, int]
+    ) -> bool:
+        """Checks if a polygon is touching/near the edge of a tile."""
+        tile_x1, tile_y1, tile_x2, tile_y2 = tile
+        tile_w = tile_x2 - tile_x1
+        tile_h = tile_y2 - tile_y1
+
+        poly_min_x, poly_min_y = np.min(poly, axis=0)
+        poly_max_x, poly_max_y = np.max(poly, axis=0)
+
+        return (
+            poly_min_x <= POLY_EDGE_THRESHOLD
+            or poly_min_y <= POLY_EDGE_THRESHOLD
+            or poly_max_x >= tile_w - POLY_EDGE_THRESHOLD
+            or poly_max_y >= tile_h - POLY_EDGE_THRESHOLD
+        )
+
+    def _merge_polys(
+        self, polys: list[tuple[int, int, int, int]], img_w: int, img_h: int
+    ) -> list[tuple[int, int, int, int]]:
+        """Merges overlapping or adjacent polygons into larger bounding boxes."""
+        if not polys:
+            return []
+
+        # Pad boxes to ensure adjacent boxes overlap
+        padded_polys = []
+        for x1, y1, x2, y2 in polys:
+            padded_polys.append(
+                [
+                    max(0, int(x1) - POLY_PADDING),
+                    max(0, int(y1) - POLY_PADDING),
+                    min(img_w, int(x2) + POLY_PADDING),
+                    min(img_h, int(y2) + POLY_PADDING),
+                ]
+            )
+
+        n = len(padded_polys)
+        adj = [[] for _ in range(n)]
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = padded_polys[i]
+                b = padded_polys[j]
+                if a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]:
+                    adj[i].append(j)
+                    adj[j].append(i)
+
+        visited = [False] * n
+        merged_polys = []
+
+        for i in range(n):
+            if visited[i]:
                 continue
 
-            if engine == "vtracer":
-                res = ocr(img[ymin:ymax, xmin:xmax])
+            cluster = []
+            stack = [i]
+            visited[i] = True
+
+            while stack:
+                curr = stack.pop()
+                cluster.append(padded_polys[curr])
+                for neighbor in adj[curr]:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        stack.append(neighbor)
+
+            if cluster:
+                x1 = min(c[0] for c in cluster)
+                y1 = min(c[1] for c in cluster)
+                x2 = max(c[2] for c in cluster)
+                y2 = max(c[3] for c in cluster)
+                merged_polys.append((x1, y1, x2, y2))
+
+        return merged_polys
+
+    def _run_ocr(
+        self,
+        img: Union["pyvips.Image", np.ndarray],
+        tiles: list[tuple[int, int, int, int]],
+    ) -> list[dict[str, Any]]:
+        """Runs OCR on all tiles, re-OCRs merged edge-crossing regions, and applies area-weighted NMS."""
+        raw_detections = []
+        global_edge_polys = []
+
+        is_vips = pyvips is not None and isinstance(img, pyvips.Image)
+        img_w = img.width if is_vips else img.shape[1]
+        img_h = img.height if is_vips else img.shape[0]
+
+        for x1, y1, x2, y2 in tiles:
+            tw = x2 - x1
+            th = y2 - y1
+            if tw <= 0 or th <= 0:
+                continue
+
+            if is_vips:
+                tile_vips = img.crop(x1, y1, tw, th)
+                tile = self._convert_to_bgr(tile_vips)
             else:
-                # Previous code for potrace
-                res = ocr(process_img[ymin:ymax, xmin:xmax])
-            tile_count += 1
+                tile = img[y1:y2, x1:x2]
 
-            if res and res.boxes is not None and len(res.txts) > 0:
-                for txt, score, box in zip(res.txts, res.scores, res.boxes):
-                    text = clean_text(txt)
-                    if not text or len(text) == 1:
+            result = self.ocr_engine(tile)
+
+            if result and result.boxes is not None and len(result.boxes) > 0:
+                for box, text, score in zip(result.boxes, result.txts, result.scores):
+                    cleaned_text = self._clean_detection(text)
+                    if not cleaned_text:
                         continue
-                        
-                    poly = np.array(box)
-                    global_poly = poly.copy()
-                    global_poly[:, 0] += xmin
-                    global_poly[:, 1] += ymin
-                    
-                    font_size = max(np.linalg.norm(global_poly[3] - global_poly[0]), 
-                                    np.linalg.norm(global_poly[2] - global_poly[1]))
-                    
-                    detections.append({
-                        "box": [int(np.min(global_poly[:, 0])), int(np.min(global_poly[:, 1])),
-                                int(np.max(global_poly[:, 0])), int(np.max(global_poly[:, 1]))],
-                        "poly": global_poly.tolist(),
-                        "text": text,
-                        "score": float(score),
-                        "font_size": int(font_size)
-                    })
-            x += tile_size - overlap
-        y += tile_size - overlap
 
-    del process_img
-    merged = filter_detections(detections)
+                    poly = np.array(box, dtype=np.int32)
+                    is_edge_poly = self._is_touching_tile_edge(poly, (x1, y1, x2, y2))
 
-    return img, merged
+                    poly[:, 0] += x1
+                    poly[:, 1] += y1
+
+                    if is_edge_poly:
+                        gx1 = int(np.min(poly[:, 0]))
+                        gy1 = int(np.min(poly[:, 1]))
+                        gx2 = int(np.max(poly[:, 0]))
+                        gy2 = int(np.max(poly[:, 1]))
+                        global_edge_polys.append((gx1, gy1, gx2, gy2))
+
+                    font_size = int(
+                        max(
+                            np.linalg.norm(poly[3] - poly[0]),
+                            np.linalg.norm(poly[2] - poly[1]),
+                        )
+                    )
+
+                    raw_detections.append(
+                        {
+                            "box": [
+                                int(np.min(poly[:, 0])),
+                                int(np.min(poly[:, 1])),
+                                int(np.max(poly[:, 0])),
+                                int(np.max(poly[:, 1])),
+                            ],
+                            "poly": poly,
+                            "text": cleaned_text,
+                            "score": float(score),
+                            "font_size": font_size,
+                        }
+                    )
+
+        # Merge edge-touching polygons and re-run OCR on merged bounding boxes
+        if global_edge_polys:
+            merged_polys = self._merge_polys(global_edge_polys, img_w, img_h)
+
+            for x1, y1, x2, y2 in merged_polys:
+                pw = x2 - x1
+                ph = y2 - y1
+                if pw <= 0 or ph <= 0:
+                    continue
+
+                if is_vips:
+                    crop_vips = img.crop(x1, y1, pw, ph)
+                    crop_bgr = self._convert_to_bgr(crop_vips)
+                else:
+                    crop_bgr = img[y1:y2, x1:x2]
+
+                result = self.ocr_engine(crop_bgr)
+                if result and result.boxes is not None and len(result.boxes) > 0:
+                    for box, text, score in zip(
+                        result.boxes, result.txts, result.scores
+                    ):
+                        cleaned_text = self._clean_detection(text)
+                        if not cleaned_text:
+                            continue
+
+                        poly = np.array(box, dtype=np.int32)
+                        poly[:, 0] += x1
+                        poly[:, 1] += y1
+
+                        font_size = int(
+                            max(
+                                np.linalg.norm(poly[3] - poly[0]),
+                                np.linalg.norm(poly[2] - poly[1]),
+                            )
+                        )
+
+                        raw_detections.append(
+                            {
+                                "box": [
+                                    int(np.min(poly[:, 0])),
+                                    int(np.min(poly[:, 1])),
+                                    int(np.max(poly[:, 0])),
+                                    int(np.max(poly[:, 1])),
+                                ],
+                                "poly": poly,
+                                "text": cleaned_text,
+                                "score": float(score),
+                                "font_size": font_size,
+                            }
+                        )
+
+        final_detections = self._apply_nms(raw_detections)
+        return final_detections
+
+    def detect(
+        self,
+        image: Union[str, Path, bytes, memoryview, "pyvips.Image", np.ndarray],
+        output: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Main detection pipeline: loads the image, generates the occupancy grid, tiles the image,
+        runs OCR on each tile, merges edge-touching detections, and applies NMS to produce final results.
+        """
+        if pyvips is not None and isinstance(image, pyvips.Image):
+            img = image
+            img_w, img_h = img.width, img.height
+        elif isinstance(image, (bytes, memoryview)):
+            if pyvips is not None:
+                img = pyvips.Image.new_from_buffer(image, "", access="random")
+                img_w, img_h = img.width, img.height
+            else:
+                nparr = np.frombuffer(image, np.uint8)
+                img = cv.imdecode(nparr, cv.IMREAD_COLOR)
+                img_h, img_w = img.shape[:2]
+        elif isinstance(image, np.ndarray):
+            img = image
+            img_h, img_w = img.shape[:2]
+        else:
+            img_path = Path(image)
+            if not img_path.exists():
+                raise FileNotFoundError(f"Image not found: {img_path}")
+            if pyvips is not None:
+                img = pyvips.Image.new_from_file(img_path, access="random")
+                img_w, img_h = img.width, img.height
+            else:
+                img = cv.imread(str(img_path))
+                img_h, img_w = img.shape[:2]
+
+        grid, cw, ch = self._generate_grid(img)
+        tiles = self._generate_tiles(grid, cw, ch, img_w, img_h)
+        detections = self._run_ocr(img, tiles)
+
+        if output:
+            self.visualize(img, detections, output)
+
+        return detections
+
+    @staticmethod
+    def visualize(
+        img: Union["pyvips.Image", np.ndarray],
+        detections: list[dict[str, Any]],
+        output: str,
+        max_preview_dim: int = 3000,
+    ) -> None:
+        """Draws detected OCR bounding boxes and text labels on the output preview."""
+        if pyvips is not None and isinstance(img, pyvips.Image):
+            w, h = img.width, img.height
+
+            if img.hasalpha():
+                img = img.flatten(background=[255, 255, 255])
+
+            img_np = img.numpy()
+            if img_np.ndim == 3 and img_np.shape[2] == 3:
+                preview_img = cv.cvtColor(img_np, cv.COLOR_RGB2BGR)
+            else:
+                preview_img = cv.cvtColor(img_np, cv.COLOR_GRAY2BGR)
+        else:
+            h, w = img.shape[:2]
+            preview_img = img.copy()
+
+        scale = (
+            min(max_preview_dim / w, max_preview_dim / h)
+            if max(w, h) > max_preview_dim
+            else 1.0
+        )
+
+        if scale < 1.0:
+            preview = cv.resize(
+                preview_img,
+                (int(w * scale), int(h * scale)),
+                interpolation=cv.INTER_AREA,
+            )
+        else:
+            preview = preview_img.copy()
+
+        # Create overlay array for translucent blending
+        overlay = preview.copy()
+
+        # Font configuration
+        font = cv.FONT_HERSHEY_SIMPLEX
+        font_scale = 1.4 * scale
+        thickness = max(1, int(1 * scale))
+
+        for det in detections:
+            poly = det.get("poly")
+            text = det.get("text", "")
+
+            if poly is None or len(poly) == 0:
+                continue
+
+            # Scale polygon coordinates to match preview size
+            pts = (np.array(poly, dtype=np.float32) * scale).astype(np.int32)
+            pts = pts.reshape((-1, 1, 2))
+
+            color = (
+                random.randint(50, 255),
+                random.randint(50, 255),
+                random.randint(50, 255),
+            )
+
+            # Bounding boxes
+            cv.fillPoly(overlay, [pts], color)
+            cv.polylines(
+                preview, [pts], isClosed=True, color=color, thickness=thickness
+            )
+
+            if text:
+                x, y = pts[0][0]
+
+                (text_w, text_h), baseline = cv.getTextSize(
+                    text, font, font_scale, thickness
+                )
+
+                text_bg_top = max(0, y - text_h - baseline - 4)
+                text_bg_bottom = y
+                text_bg_right = min(preview.shape[1], x + text_w + 6)
+
+                cv.rectangle(
+                    overlay,
+                    (x, text_bg_top),
+                    (text_bg_right, text_bg_bottom),
+                    color,
+                    -1,
+                )
+                text_y = (
+                    y - baseline - 2
+                    if (y - text_h - baseline - 4) >= 0
+                    else y + text_h + 2
+                )
+                cv.putText(
+                    preview,
+                    text,
+                    (x + 3, text_y),
+                    font,
+                    font_scale,
+                    (0, 0, 255),
+                    thickness,
+                    cv.LINE_AA,
+                )
+
+        # Blend overlay (0.4 opacity) with base image (0.6 opacity)
+        alpha = 0.4
+        cv.addWeighted(overlay, alpha, preview, 1 - alpha, 0, preview)
+
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv.imwrite(str(output_path), preview)
+
+    def remove_txt(
+        self,
+        img: Union["pyvips.Image", np.ndarray],
+        detections: list[dict[str, Any]],
+        output: Optional[str] = None,
+        min_wall_length: int = 80,
+    ) -> np.ndarray:
+        """Removes text using the existing remove_txt algorithm."""
+        if pyvips is not None and isinstance(img, pyvips.Image):
+            bgr = self._convert_to_bgr(img)
+        else:
+            bgr = img
+        return remove_txt(bgr, detections, output=output, min_wall_length=min_wall_length)
+
+
+def recognize_txt(
+    image_path: Union[str, Path, bytes, memoryview, "pyvips.Image", np.ndarray],
+    ocr: Optional[Union[RapidOCR, FloorMapOCR]] = None,
+    engine: Optional[str] = None,
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """Pre-processes image and runs FloorMapOCR text recognition pipeline."""
+    if isinstance(ocr, FloorMapOCR):
+        floor_ocr = ocr
+    elif isinstance(ocr, RapidOCR):
+        floor_ocr = FloorMapOCR(ocr_engine=ocr)
+    else:
+        floor_ocr = FloorMapOCR()
+
+    if pyvips is not None and isinstance(image_path, pyvips.Image):
+        vips_img = image_path
+        bgr_img = floor_ocr._convert_to_bgr(vips_img)
+        img_w, img_h = vips_img.width, vips_img.height
+        target_img = vips_img
+    elif isinstance(image_path, (bytes, memoryview)):
+        if pyvips is not None:
+            vips_img = pyvips.Image.new_from_buffer(image_path, "", access="random")
+            bgr_img = floor_ocr._convert_to_bgr(vips_img)
+            img_w, img_h = vips_img.width, vips_img.height
+            target_img = vips_img
+        else:
+            nparr = np.frombuffer(image_path, np.uint8)
+            bgr_img = cv.imdecode(nparr, cv.IMREAD_COLOR)
+            img_h, img_w = bgr_img.shape[:2]
+            target_img = bgr_img
+    elif isinstance(image_path, np.ndarray):
+        bgr_img = image_path
+        img_h, img_w = bgr_img.shape[:2]
+        target_img = bgr_img
+    else:
+        path = Path(image_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {path}")
+        if pyvips is not None:
+            vips_img = pyvips.Image.new_from_file(path, access="random")
+            bgr_img = floor_ocr._convert_to_bgr(vips_img)
+            img_w, img_h = vips_img.width, vips_img.height
+            target_img = vips_img
+        else:
+            bgr_img = cv.imread(str(path))
+            img_h, img_w = bgr_img.shape[:2]
+            target_img = bgr_img
+
+    grid, cw, ch = floor_ocr._generate_grid(target_img)
+    tiles = floor_ocr._generate_tiles(grid, cw, ch, img_w, img_h)
+    detections = floor_ocr._run_ocr(target_img, tiles)
+
+    return bgr_img, detections
 
 
 def remove_txt(img, detections, output=None, min_wall_length=80):
@@ -363,7 +857,6 @@ def remove_txt(img, detections, output=None, min_wall_length=80):
     del structural_map, gray 
     if output:
         cv.imwrite(output, img)
-    gc.collect()
     return img
 
 
@@ -382,16 +875,31 @@ def resize_img_det(img, detections, max_side=RESIZE_LIMIT):
     scaled_detections = []
     for d in detections:
         scaled_detections.append({
-            "box": [int(v * scale) for v in d["box"]],
+            "box": [int(v * scale) for v in d.get("box", [0, 0, 0, 0])],
             "poly": [[pt[0] * scale, pt[1] * scale] for pt in d["poly"]],
             "text": d["text"],
-            "score": d["score"],
-            "font_size": int(d["font_size"] * scale)
+            "score": d.get("score", 0.0),
+            "font_size": int(d.get("font_size", 25) * scale)
         })
     return resized_img, scaled_detections
 
 
-def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = None, floor_locations = None, paths = None, injector = None, geo_data = None, scale_x = 1.0, scale_y = 1.0, orig_w = 2000, orig_h = 2000, engine = None):
+def inject_elements(
+    svg,
+    raw_svg_content,
+    detections,
+    floor_id,
+    floor_name=None,
+    floor_locations=None,
+    paths=None,
+    injector=None,
+    geo_data=None,
+    scale_x=1.0,
+    scale_y=1.0,
+    orig_w=2000,
+    orig_h=2000,
+    engine=None,
+):
     """
     Injects text elements into an SVG file based on detected text regions, with scale factors matching py-png2svg-ms.
     """
@@ -399,16 +907,6 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
     ET.register_namespace('', "http://www.w3.org/2000/svg")
     ET.register_namespace('sclera', 'https://sclera.app/ns')
     root = ET.fromstring(svg)
-    
-    # remove extra vtracer background path if engine is vtracer
-    # if engine == "vtracer":
-    #     for child in list(root):
-    #         tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-    #         if tag_name == 'path' and 'd' in child.attrib:
-    #             d = child.attrib['d']
-    #             if d.startswith('M0,0') or d.startswith('M 0 0'):
-    #                 root.remove(child)
-    #                 break
     
     # inject floor metadata
     if injector:
@@ -420,7 +918,7 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
     # inject text elements for detected text regions
     if detections:
         font_size = (
-            np.median([det["font_size"] for det in detections]) if detections else 25
+            np.median([det.get("font_size", 25) for det in detections]) if detections else 25
         )
         scaled_font_size = (font_size * (scale_x + scale_y) / 2.0) - 5
         
@@ -428,14 +926,9 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
             poly = np.array(det["poly"], dtype=np.float64)
             cx, cy = np.mean(poly, axis=0)
             
-            avg_horiz = (np.linalg.norm(poly[1] - poly[0]) + np.linalg.norm(poly[3] - poly[2])) / 2.0
-            avg_vert = (np.linalg.norm(poly[0] - poly[3]) + np.linalg.norm(poly[2] - poly[1])) / 2.0
-            
-            if avg_horiz >= avg_vert:
-                dx, dy = poly[1][0] - poly[0][0], poly[1][1] - poly[0][1]
-            else:
-                dx, dy = poly[0][0] - poly[3][0], poly[0][1] - poly[3][1]
-            
+            # Calculate reading direction angle along the baseline (poly[0] -> poly[1])
+            dx = poly[1][0] - poly[0][0]
+            dy = poly[1][1] - poly[0][1]
             angle_deg = np.degrees(np.arctan2(dy, dx))
         
             cx = cx * scale_x
@@ -459,3 +952,33 @@ def inject_elements(svg, raw_svg_content, detections, floor_id, floor_name = Non
             
     return ET.ElementTree(root)
 
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Floor Plan OCR Detection and Text Removal Tool"
+    )
+    
+    parser.add_argument(
+        "--image",
+        "-i",
+        type=str,
+        nargs="?",
+        default="./assets/1.png",
+        help="Path to the input image file.",
+    )
+    parser.add_argument(
+        "--vis",
+        "-v",
+        type=str,
+        default=None,
+        help="Output Path to save the visualization.",
+    )
+
+    args = parser.parse_args()
+
+    ocr = FloorMapOCR()
+    _ = ocr.detect(args.image, args.vis)
+
+
+if __name__ == "__main__":
+    main()
