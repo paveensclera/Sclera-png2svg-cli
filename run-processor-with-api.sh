@@ -48,6 +48,8 @@ show_help() {
     echo "  -v, --vdms <id(s)>       VDMS filter for multi-tenant (e.g. 'VDMS885' or 'VDMS885,VDMS886')"
     echo "  -e, --engine <engine>    Conversion engine: 'potrace' (default) or 'vtracer'"
     echo "  -a, --auto-detect        Auto-detect engine based on image color (vtracer for color, potrace for B&W)"
+    echo "      --disable-ocr        Disable OCR text recognition and removal"
+    echo "      --enable-ocr         Enable OCR text recognition and removal"
     echo "      --disable-svgo       Disable SVGO optimization (use svgcleaner only)"
     echo "  -i, --input-dir <dir>    Input directory containing PNG files (default: /home/sclera/images/png_floors)"
     echo "  -o, --output-dir <dir>   Output directory for SVG files (default: /home/sclera/images/svg_floors)"
@@ -60,6 +62,7 @@ show_help() {
     echo "  VDMS_FILTER              Filter specific VDMS box(es) (e.g. VDMS885 or VDMS885,VDMS886)"
     echo "  CONVERSION_ENGINE        'potrace' or 'vtracer'"
     echo "  AUTO_DETECT_ENGINE       'true' or 'false'"
+    echo "  ENABLE_OCR               'true' or 'false'"
     echo "  ENABLE_SVGO              'true' or 'false'"
     echo ""
     echo "Examples:"
@@ -110,6 +113,14 @@ while [[ $# -gt 0 ]]; do
             export AUTO_DETECT_ENGINE="true"
             shift
             ;;
+        --disable-ocr|--no-ocr)
+            export ENABLE_OCR="false"
+            shift
+            ;;
+        --enable-ocr|--ocr)
+            export ENABLE_OCR="true"
+            shift
+            ;;
         --disable-svgo)
             export ENABLE_SVGO="false"
             shift
@@ -150,6 +161,7 @@ export BASE_URL="${BASE_URL:-http://host.docker.internal:8888/api/v1/migration}"
 export MULTI_TENANT_BASEURL="${MULTI_TENANT_BASEURL:-https://tenant.com}"
 export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
+export ENABLE_OCR="${ENABLE_OCR:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
 export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
@@ -178,6 +190,7 @@ fi
 echo "Output directory:  $SVG_OUTPUT_DIR"
 echo "Conversion engine: $CONVERSION_ENGINE"
 echo "Auto-detect engine: $AUTO_DETECT_ENGINE"
+echo "OCR Processing:    $ENABLE_OCR"
 echo "SVGO Optimization: $ENABLE_SVGO"
 echo "================================================================================"
 echo ""
@@ -232,6 +245,11 @@ CONTAINER_ARGS+=(--engine "$CONVERSION_ENGINE")
 if [ "$AUTO_DETECT_ENGINE" = "true" ]; then
     CONTAINER_ARGS+=(--auto-detect)
 fi
+if [ "$ENABLE_OCR" = "false" ]; then
+    CONTAINER_ARGS+=(--disable-ocr)
+elif [ "$ENABLE_OCR" = "true" ]; then
+    CONTAINER_ARGS+=(--enable-ocr)
+fi
 if [ "$ENABLE_SVGO" = "false" ]; then
     CONTAINER_ARGS+=(--disable-svgo)
 fi
@@ -253,6 +271,7 @@ docker run --rm \
     -e BASE_URL="$BASE_URL" \
     -e VDMS_FILTER="$VDMS_FILTER" \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
+    -e ENABLE_OCR="$ENABLE_OCR" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
     -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
     -e OCR_ENGINE="$OCR_ENGINE" \

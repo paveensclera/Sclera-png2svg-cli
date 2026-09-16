@@ -43,6 +43,8 @@ show_help() {
     echo "  -v, --vdms <id(s)>       VDMS filter for multi-tenant (e.g. 'VDMS885' or 'VDMS885,VDMS886')"
     echo "  -e, --engine <engine>    Conversion engine: 'potrace' (default) or 'vtracer'"
     echo "  -a, --auto-detect        Auto-detect engine based on image color (vtracer for color, potrace for B&W)"
+    echo "      --disable-ocr        Disable OCR text recognition and removal"
+    echo "      --enable-ocr         Enable OCR text recognition and removal"
     echo "      --disable-svgo       Disable SVGO optimization (use svgcleaner only)"
     echo "  -i, --input-dir <dir>    Input directory containing PNG files (default: /home/sclera/images/png_floors)"
     echo "  -o, --output-dir <dir>   Output directory for SVG files (default: /home/sclera/images/svg_floors)"
@@ -84,6 +86,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -a|--auto-detect|--auto-detect-engine)
             export AUTO_DETECT_ENGINE="true"
+            shift
+            ;;
+        --disable-ocr|--no-ocr)
+            export ENABLE_OCR="false"
+            shift
+            ;;
+        --enable-ocr|--ocr)
+            export ENABLE_OCR="true"
             shift
             ;;
         --disable-svgo)
@@ -130,6 +140,7 @@ export BASE_URL="${BASE_URL:-http://host.docker.internal:8888/api/v1/migration}"
 export MULTI_TENANT_BASEURL="${MULTI_TENANT_BASEURL:-https://tenant.com}"
 export API_ENDPOINT="${API_ENDPOINT:-${BASE_URL}/convert}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
+export ENABLE_OCR="${ENABLE_OCR:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
 export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
@@ -179,6 +190,7 @@ print_header() {
     fi
     echo -e "Output directory: ${CYAN}$SVG_OUTPUT_DIR${NC}"
     echo -e "Docker image:     ${CYAN}$IMAGE_NAME${NC}"
+    echo -e "OCR Processing:   ${CYAN}$ENABLE_OCR${NC}"
     echo -e "SVGO Optimization:${CYAN}$ENABLE_SVGO${NC}"
     echo -e "Conversion engine:${CYAN}$CONVERSION_ENGINE${NC}"
     echo -e "Auto-detect engine:${CYAN}$AUTO_DETECT_ENGINE${NC}"
@@ -533,6 +545,11 @@ main() {
     if [ "$AUTO_DETECT_ENGINE" = "true" ]; then
         CONTAINER_ARGS+=(--auto-detect)
     fi
+    if [ "$ENABLE_OCR" = "false" ]; then
+        CONTAINER_ARGS+=(--disable-ocr)
+    elif [ "$ENABLE_OCR" = "true" ]; then
+        CONTAINER_ARGS+=(--enable-ocr)
+    fi
     if [ "$ENABLE_SVGO" = "false" ]; then
         CONTAINER_ARGS+=(--disable-svgo)
     fi
@@ -551,6 +568,7 @@ main() {
         -e MULTI_TENANT_BASEURL="$MULTI_TENANT_BASEURL" \
         -e API_ENDPOINT="$API_ENDPOINT" \
         -e ENABLE_SVGO="$ENABLE_SVGO" \
+        -e ENABLE_OCR="$ENABLE_OCR" \
         -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
         -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
         -v "$SVG_OUTPUT_DIR":/app/vdms_svg_outputs \

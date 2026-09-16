@@ -56,7 +56,20 @@ root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
 
-OCR_INSTANCE = init_ocr_engine()
+ENABLE_OCR = (os.getenv("ENABLE_OCR", "true") or "").strip().strip("\"'").lower() in ("true", "1", "yes")
+
+OCR_INSTANCE = None
+
+
+def get_ocr_engine():
+    """Lazily initialize and return the RapidOCR engine instance if ENABLE_OCR is True."""
+    global OCR_INSTANCE
+    if not ENABLE_OCR:
+        return None
+    if OCR_INSTANCE is None:
+        logger.info("Initializing OCR engine...")
+        OCR_INSTANCE = init_ocr_engine()
+    return OCR_INSTANCE
 
 ALL_LOGS_FILE = None
 FAILED_LOGS_FILE = None
@@ -694,6 +707,12 @@ def run_potrace_conversion(
             imagemagick_cmd = [
                 "convert",
                 str(png_path),
+                "-background",
+                "white",
+                "-alpha",
+                "remove",
+                "-alpha",
+                "off",
                 "-colorspace",
                 "Gray",
                 "-resize",
@@ -715,6 +734,12 @@ def run_potrace_conversion(
             imagemagick_cmd = [
                 "convert",
                 str(png_path),
+                "-background",
+                "white",
+                "-alpha",
+                "remove",
+                "-alpha",
+                "off",
                 "-threshold",
                 "99%",
                 str(pbm_path),
@@ -858,6 +883,12 @@ def check_dependencies():
 
     if not ENABLE_SVGO:
         logger.info(f"   svgo: Disabled (ENABLE_SVGO=false)")
+
+    if ENABLE_OCR:
+        ocr_engine_type = os.getenv("OCR_ENGINE", "onnxruntime")
+        logger.info(f"   OCR Engine: Available (RapidOCR - backend: {ocr_engine_type})")
+    else:
+        logger.info(f"   OCR Engine: Disabled (ENABLE_OCR=false)")
 
     return all_ok
 
@@ -1268,13 +1299,21 @@ def process_local_files(filter_filenames: list = None):
 
             file_engine = determine_engine(orig_img)
 
-            img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
-            img = remove_txt(img, detections)
-            temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
+            if ENABLE_OCR:
+                logger.debug(f"   Running OCR and text removal...")
+                ocr_engine = get_ocr_engine()
+                img, detections = recognize_txt(str(png_path), ocr_engine, engine=file_engine)
+                img = remove_txt(img, detections)
+                temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
+                cv.imwrite(str(temp_png), img)
+                conversion_input_png = temp_png
+            else:
+                logger.debug(f"   OCR is disabled, skipping text recognition & removal...")
+                img = orig_img
+                detections = []
+                conversion_input_png = png_path
 
-            cv.imwrite(str(temp_png), img)
-
-            resultant_svg_content = convert_png_to_svg_local(temp_png, engine=file_engine)
+            resultant_svg_content = convert_png_to_svg_local(conversion_input_png, engine=file_engine)
 
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -1555,13 +1594,21 @@ def process_filtered_files(filter_filenames: list = None):
 
             file_engine = determine_engine(orig_img)
 
-            img, detections = recognize_txt(str(png_path), OCR_INSTANCE, engine=file_engine)
-            img = remove_txt(img, detections)
-            temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
+            if ENABLE_OCR:
+                logger.debug(f"   Running OCR and text removal...")
+                ocr_engine = get_ocr_engine()
+                img, detections = recognize_txt(str(png_path), ocr_engine, engine=file_engine)
+                img = remove_txt(img, detections)
+                temp_png = TEMP_DIR / f"{png_path.stem}_notext.png"
+                cv.imwrite(str(temp_png), img)
+                conversion_input_png = temp_png
+            else:
+                logger.debug(f"   OCR is disabled, skipping text recognition & removal...")
+                img = orig_img
+                detections = []
+                conversion_input_png = png_path
 
-            cv.imwrite(str(temp_png), img)
-
-            resultant_svg_content = convert_png_to_svg_local(temp_png, engine=file_engine)
+            resultant_svg_content = convert_png_to_svg_local(conversion_input_png, engine=file_engine)
 
             if not resultant_svg_content:
                 conversion_failed_count += 1
@@ -1843,15 +1890,24 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
 
                 file_engine = determine_engine(orig_img)
 
-                # Perform OCR & text removal
-                img, detections = recognize_txt(str(temp_png_path), OCR_INSTANCE, engine=file_engine)
-                img = remove_txt(img, detections)
+                if ENABLE_OCR:
+                    # Perform OCR & text removal
+                    logger.debug(f"   Running OCR and text removal...")
+                    ocr_engine = get_ocr_engine()
+                    img, detections = recognize_txt(str(temp_png_path), ocr_engine, engine=file_engine)
+                    img = remove_txt(img, detections)
 
-                temp_notext_png = temp_png_path.parent / f"{image_id}_notext.png"
-                cv.imwrite(str(temp_notext_png), img)
+                    temp_notext_png = temp_png_path.parent / f"{image_id}_notext.png"
+                    cv.imwrite(str(temp_notext_png), img)
+                    conversion_input_png = temp_notext_png
+                else:
+                    logger.debug(f"   OCR is disabled, skipping text recognition & removal...")
+                    img = orig_img
+                    detections = []
+                    conversion_input_png = temp_png_path
 
                 # Convert to SVG in memory
-                resultant_svg_content = convert_png_to_svg_local(temp_notext_png, engine=file_engine)
+                resultant_svg_content = convert_png_to_svg_local(conversion_input_png, engine=file_engine)
                 if not resultant_svg_content:
                     conversion_failed_count += 1
                     logger.error(
@@ -1904,8 +1960,8 @@ def process_cloud_floor_maps(cloud_url: str, vdms_floor_map: dict):
                     tree.getroot(), encoding="utf-8", xml_declaration=True
                 )
 
-                # upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
-                # logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
+                upload_response = data.upload_floor(floor_id, svg_bytes, vdms_id=vdms_id)
+                logger.info(f"[{current_index}/{total_files}] UPLOADED: {floor_id} | Response: {upload_response}")
 
                 output_path = os.path.join(OUTPUT_DIR, f"{floor_id}.svg")
                 with open(output_path, "wb") as f:
@@ -2055,7 +2111,7 @@ def process_floors_from_api(api_endpoint: str):
 
 def parse_arguments_and_update_config():
     """Parse CLI arguments and update configuration globals"""
-    global CONVERSION_ENGINE, AUTO_DETECT_ENGINE, ENABLE_SVGO, INPUT_DIR, OUTPUT_DIR
+    global CONVERSION_ENGINE, AUTO_DETECT_ENGINE, ENABLE_SVGO, ENABLE_OCR, INPUT_DIR, OUTPUT_DIR
 
     import argparse
 
@@ -2083,6 +2139,19 @@ def parse_arguments_and_update_config():
         action=argparse.BooleanOptionalAction,
         default=AUTO_DETECT_ENGINE,
         help="Auto-detect conversion engine per image based on RGB color content (potrace for grayscale, vtracer for RGB)"
+    )
+    parser.add_argument(
+        "--ocr", "--enable-ocr",
+        dest="enable_ocr",
+        action=argparse.BooleanOptionalAction,
+        default=ENABLE_OCR,
+        help="Enable or disable OCR text recognition and text removal (default: enabled or ENABLE_OCR env var)",
+    )
+    parser.add_argument(
+        "--disable-ocr",
+        action="store_true",
+        default=False,
+        help="Disable OCR text recognition and text removal (equivalent to --no-ocr)",
     )
     parser.add_argument(
         "--disable-svgo",
@@ -2121,6 +2190,10 @@ def parse_arguments_and_update_config():
 
     CONVERSION_ENGINE = args.engine
     AUTO_DETECT_ENGINE = bool(args.auto_detect)
+    if args.disable_ocr:
+        ENABLE_OCR = False
+    elif args.enable_ocr is not None:
+        ENABLE_OCR = bool(args.enable_ocr)
     ENABLE_SVGO = not args.disable_svgo
     INPUT_DIR = Path(args.input_dir)
     OUTPUT_DIR = Path(args.output_dir)
@@ -2139,6 +2212,9 @@ if __name__ == "__main__":
     logger.info(f"Python script: {__file__}")
     logger.info(f"Conversion Engine: {CONVERSION_ENGINE.upper()}{' (Default - Auto-detect enabled)' if AUTO_DETECT_ENGINE else ''}")
     logger.info(f"Auto-detect Engine: {'Enabled' if AUTO_DETECT_ENGINE else 'Disabled'}")
+    logger.info(f"OCR Processing:    {'Enabled' if ENABLE_OCR else 'Disabled (skipping text recognition & removal)'}")
+    if not ENABLE_OCR:
+        logger.info("Tip: Set ENABLE_OCR=true or pass --enable-ocr to enable OCR text processing")
 
     MODE = (os.getenv("MODE", "single-tenant") or "").strip().lower()
     is_multi_tenant = MODE in ("multi-tenant", "multitenant", "multi_tenant", "multi")

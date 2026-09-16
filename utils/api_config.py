@@ -11,7 +11,8 @@ load_dotenv(".env.local")
 class Data:
     def __init__(self):
         mode = (os.getenv("MODE") or "").strip().strip("\r\n\"'").lower()
-        if mode in ("multi-tenant", "multitenant", "multi_tenant", "multi"):
+        self.is_multi_tenant = mode in ("multi-tenant", "multitenant", "multi_tenant", "multi")
+        if self.is_multi_tenant:
             raw_base = os.getenv("MULTI_TENANT_BASEURL") or os.getenv("BASE_URL") or ""
             raw_base = raw_base.strip().strip("\r\n\"'").rstrip("/")
             self.base_url = f"{raw_base}/api/v1/migration"
@@ -209,16 +210,26 @@ class Data:
             return None
 
     def upload_floor(self, floor_id, svg_bytes, vdms_id=None):
-        url = f"{self.base_url}/upload"
-        params = {"floor_id": floor_id}
-        if vdms_id:
-            params["vdms_id"] = vdms_id
+        if self.is_multi_tenant:
+            url = f"{self.base_url}/upload"
+            params = {"floor_id": floor_id}
+            if vdms_id:
+                params["vdms_id"] = vdms_id
 
-        files = {"file": (f"{floor_id}.svg", svg_bytes, "image/svg+xml")}
-        response = self.session.post(url, files=files, params=params)
+            files = {"file": (f"{floor_id}.svg", svg_bytes, "image/svg+xml")}
+            response = self.session.post(url, files=files, params=params)
 
-        if response.status_code >= 400:
-            print(f"DEBUG UPLOAD ERROR {response.status_code}: {response.text}")
+            if response.status_code >= 400:
+                print(f"DEBUG UPLOAD ERROR {response.status_code}: {response.text}")
 
-        response.raise_for_status()
-        return response.text
+            response.raise_for_status()
+            return response.text
+        else:
+            url = f"{self.base_url}/upload"
+
+            files = {
+                "file": (floor_id, svg_bytes, "image/svg+xml")
+            }
+            response = self.session.post(url, files=files)
+            response.raise_for_status()
+            return response.text

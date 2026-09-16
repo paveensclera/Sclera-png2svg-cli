@@ -40,6 +40,7 @@ load_env ".env.local"
 # API Endpoint & Base URL Configuration
 export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
+export ENABLE_OCR="${ENABLE_OCR:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
 export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
@@ -151,6 +152,7 @@ run_single_benchmark() {
         -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
         -v "$test_out_dir":/home/sclera/images/svg_floors \
         -e ENABLE_SVGO="$ENABLE_SVGO" \
+        -e ENABLE_OCR="$ENABLE_OCR" \
         -e BASE_URL="$BASE_URL" \
         -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
         -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
@@ -248,6 +250,7 @@ print_header() {
     echo -e "Input Directory:   ${CYAN}$PNG_INPUT_DIR${NC}"
     echo -e "Base Output Dir:   ${CYAN}$SVG_OUTPUT_DIR${NC}"
     echo -e "Conversion Engine: ${CYAN}$CONVERSION_ENGINE${NC} (Auto-detect: ${AUTO_DETECT_ENGINE})"
+    echo -e "OCR Processing:    ${CYAN}$ENABLE_OCR${NC}"
     echo -e "SVGO Optimization: ${CYAN}$ENABLE_SVGO${NC}"
 
     local png_count=$(find "$PNG_INPUT_DIR" -name "*.png" -type f 2>/dev/null | wc -l)

@@ -33,6 +33,7 @@ export BASE_URL="${BASE_URL:-http://host.docker.internal:8082/api/v1/migration}"
 
 # Optional: Enable/Disable SVGO optimization
 export ENABLE_SVGO="${ENABLE_SVGO:-true}"
+export ENABLE_OCR="${ENABLE_OCR:-true}"
 export CONVERSION_ENGINE="${CONVERSION_ENGINE:-potrace}"
 export AUTO_DETECT_ENGINE="${AUTO_DETECT_ENGINE:-false}"
 export OCR_ENGINE="${OCR_ENGINE:-onnxruntime}"
@@ -44,6 +45,7 @@ echo "Output directory: $SVG_OUTPUT_DIR"
 echo "Conversion engine: $CONVERSION_ENGINE"
 echo "Auto-detect engine: $AUTO_DETECT_ENGINE"
 echo "OCR engine: $OCR_ENGINE"
+echo "OCR enabled: $ENABLE_OCR"
 echo ""
 
 # Create directories if they don't exist
@@ -86,6 +88,7 @@ docker run --rm \
     -v "$PNG_INPUT_DIR":/home/sclera/images/png_floors \
     -v "$SVG_OUTPUT_DIR":/home/sclera/images/svg_floors \
     -e ENABLE_SVGO="$ENABLE_SVGO" \
+    -e ENABLE_OCR="$ENABLE_OCR" \
     -e CONVERSION_ENGINE="$CONVERSION_ENGINE" \
     -e AUTO_DETECT_ENGINE="$AUTO_DETECT_ENGINE" \
     -e OCR_ENGINE="$OCR_ENGINE" \
