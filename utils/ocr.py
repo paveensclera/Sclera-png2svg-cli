@@ -743,14 +743,156 @@ class FloorMapOCR:
         img: Union["pyvips.Image", np.ndarray],
         detections: list[dict[str, Any]],
         output: Optional[str] = None,
-        min_wall_length: int = 80,
     ) -> np.ndarray:
-        """Removes text using the existing remove_txt algorithm."""
+        """Removes detected text from the image while preserving architectural walls and lines."""
         if pyvips is not None and isinstance(img, pyvips.Image):
+            img_w, img_h = img.width, img.height
             bgr = self._convert_to_bgr(img)
         else:
-            bgr = img
-        return remove_txt(bgr, detections, output=output, min_wall_length=min_wall_length)
+            bgr = self._convert_to_bgr(img)
+            img_h, img_w = bgr.shape[:2]
+
+        if not detections:
+            if output:
+                output_path = Path(output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                cv.imwrite(str(output_path), bgr)
+            return bgr
+
+        dilate_k2 = np.ones((2, 2), np.uint8)
+        dilate_k3 = np.ones((3, 3), np.uint8)
+
+        base_wall_len = max(30, CELL_SIZE // 6)
+
+        for det in detections:
+            poly = np.array(det["poly"], dtype=np.int32)
+            x, y, pw, ph = cv.boundingRect(poly)
+
+            # Apply padding on bounding box and get crop region
+            h_wall_len = max(base_wall_len, int(pw * 1.3))
+            v_wall_len = max(base_wall_len, int(ph * 2.0))
+
+            pad_x = h_wall_len + 15
+            pad_y = v_wall_len + 15
+            x_min, y_min = max(0, x - pad_x), max(0, y - pad_y)
+            x_max, y_max = min(img_w, x + pw + pad_x), min(img_h, y + ph + pad_y)
+            cw, ch = x_max - x_min, y_max - y_min
+
+            if cw <= 0 or ch <= 0:
+                continue
+
+            local_crop = bgr[y_min:y_max, x_min:x_max]
+
+            # Fast local color filter: suppress colored MEP/annotation lines
+            if local_crop.ndim == 3 and local_crop.shape[2] == 3:
+                local_gray = cv.cvtColor(local_crop, cv.COLOR_BGR2GRAY)
+                max_c = np.max(local_crop, axis=2)
+                min_c = np.min(local_crop, axis=2)
+                is_color = (max_c - min_c > 20) & (max_c > 80)
+                local_gray[is_color] = 255
+            else:
+                local_gray = local_crop
+
+            # Detect walls in local context using adaptive kernels
+            _, local_binary = cv.threshold(local_gray, 200, 255, cv.THRESH_BINARY_INV)
+            h_kernel = cv.getStructuringElement(cv.MORPH_RECT, (h_wall_len, 1))
+            v_kernel = cv.getStructuringElement(cv.MORPH_RECT, (1, v_wall_len))
+
+            h_walls = cv.morphologyEx(local_binary, cv.MORPH_OPEN, h_kernel)
+            v_walls = cv.morphologyEx(local_binary, cv.MORPH_OPEN, v_kernel)
+            local_walls = cv.dilate(
+                cv.bitwise_or(h_walls, v_walls), dilate_k2, iterations=1
+            )
+
+            # Local polygon mask
+            rel_poly = poly - [x_min, y_min]
+            text_poly_mask = np.zeros((ch, cw), dtype=np.uint8)
+            cv.fillPoly(text_poly_mask, [rel_poly], 255)
+            text_poly_dilated = cv.dilate(text_poly_mask, dilate_k3, iterations=1)
+
+            # Sample non-ink pixels inside text polygon and immediate margin
+            # Non-wall, non-dark pixels capture the exact substrate color without boundary bleed
+            sample_mask = (
+                (text_poly_dilated > 0) & (local_walls == 0) & (local_gray > 160)
+            )
+            if np.count_nonzero(sample_mask) >= 10:
+                bg_samples = local_crop[sample_mask]
+            else:
+                poly_grays = local_gray[text_poly_mask > 0]
+                thresh = (
+                    np.percentile(poly_grays, 40) if len(poly_grays) > 0 else 160
+                )
+                fallback_mask = (text_poly_mask > 0) & (local_gray >= thresh)
+                bg_samples = (
+                    local_crop[fallback_mask]
+                    if np.count_nonzero(fallback_mask) > 0
+                    else local_crop[text_poly_mask > 0]
+                )
+
+            bg_color = np.median(bg_samples, axis=0).astype(np.uint8)
+            bg_std = np.std(bg_samples, axis=0)
+            matches = np.all(np.abs(bg_samples - bg_color) < 15, axis=1)
+            is_uniform_bg = (np.mean(matches) >= 0.85) or (np.max(bg_std) < 14)
+
+            if is_uniform_bg:
+                # Capture all ink and subtle anti-aliasing pixels deviating from uniform background
+                diff = np.max(
+                    np.abs(local_crop.astype(int) - bg_color.astype(int)), axis=2
+                )
+                raw_ink = (
+                    (diff > 8) & (text_poly_mask > 0)
+                ).astype(np.uint8) * 255
+            else:
+                # Multi-colored background: dynamic thresholding
+                bg_gray = int(
+                    cv.cvtColor(bg_color.reshape(1, 1, 3), cv.COLOR_BGR2GRAY)[
+                        0, 0
+                    ]
+                )
+                ink_thresh = min(242, max(140, bg_gray - 15))
+                _, local_ink = cv.threshold(
+                    local_gray, ink_thresh, 255, cv.THRESH_BINARY_INV
+                )
+                raw_ink = cv.bitwise_and(local_ink, text_poly_mask)
+
+            # Dilate ink by 1px to swallow remaining sub-pixel anti-aliased font edges
+            dilated_ink = cv.dilate(raw_ink, dilate_k3, iterations=1)
+            text_ink = cv.bitwise_and(dilated_ink, text_poly_dilated)
+
+            # Strictly preserve architectural walls and structural lines
+            text_ink = cv.bitwise_and(text_ink, cv.bitwise_not(local_walls))
+
+            if not text_ink.any():
+                continue
+
+            # Target crop strictly around the text (+3px padding)
+            bx1, by1 = max(0, x - 3), max(0, y - 3)
+            bx2, by2 = min(img_w, x + pw + 3), min(img_h, y + ph + 3)
+            rx1, ry1 = bx1 - x_min, by1 - y_min
+            rx2, ry2 = bx2 - x_min, by2 - y_min
+
+            target_crop = bgr[by1:by2, bx1:bx2]
+            target_ink = text_ink[ry1:ry2, rx1:rx2]
+
+            if is_uniform_bg:
+                target_crop[target_ink > 0] = bg_color
+            else:
+                if target_ink.any():
+                    target_crop = cv.inpaint(
+                        target_crop,
+                        target_ink,
+                        inpaintRadius=2,
+                        flags=cv.INPAINT_TELEA,
+                    )
+
+            bgr[by1:by2, bx1:bx2] = target_crop
+
+        if output:
+            output_path = Path(output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            cv.imwrite(str(output_path), bgr)
+
+        return bgr
 
 
 def recognize_txt(
@@ -807,57 +949,15 @@ def recognize_txt(
     return bgr_img, detections
 
 
-def remove_txt(img, detections, output=None, min_wall_length=80):
-    """Removes text from the image, using localized inpainting and structural wall restoration."""
-    h, w = img.shape[:2]
-    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    
-    if len(img.shape) == 3 and img.shape[2] == 3:
-        hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-        _, s, v = cv.split(hsv)
-        gray[(s > 8) & (v > 100)] = 255
-        
-    _, binary = cv.threshold(gray, 200, 255, cv.THRESH_BINARY_INV)
-    h_kernel = cv.getStructuringElement(cv.MORPH_RECT, (min_wall_length, 1))
-    v_kernel = cv.getStructuringElement(cv.MORPH_RECT, (1, min_wall_length))
-    structural_map = cv.dilate(cv.add(cv.morphologyEx(binary, cv.MORPH_OPEN, h_kernel), 
-                                      cv.morphologyEx(binary, cv.MORPH_OPEN, v_kernel)), 
-                               np.ones((2, 2), np.uint8), iterations=1)
-    del binary
-    
-    for det in detections:
-        poly = np.array(det["poly"], dtype=np.int32)
-        x, y, pw, ph = cv.boundingRect(poly)
-        
-        pad = 5
-        x_min, y_min = max(0, x - pad), max(0, y - pad)
-        x_max, y_max = min(w, x + pw + pad), min(h, y + ph + pad)
-        cw, ch = x_max - x_min, y_max - y_min
-        
-        if cw <= 0 or ch <= 0:
-            continue
-
-        roi_mask = np.zeros((ch, cw), dtype=np.uint8)
-        cv.fillPoly(roi_mask, [poly - [x_min, y_min]], 255)
-        wall_pixels = cv.bitwise_and(roi_mask, structural_map[y_min:y_max, x_min:x_max])
-        
-        _, ink_mask = cv.threshold(gray[y_min:y_max, x_min:x_max], 220, 255, cv.THRESH_BINARY_INV)
-        ink_to_inpaint = cv.bitwise_and(cv.dilate(ink_mask, np.ones((3, 3), np.uint8), iterations=1), roi_mask)
-        
-        crop = img[y_min:y_max, x_min:x_max]
-        if ink_to_inpaint.any():
-            crop = cv.inpaint(crop, ink_to_inpaint, inpaintRadius=5, flags=cv.INPAINT_TELEA)
-            
-        if wall_pixels.any():
-            original_crop = img[y_min:y_max, x_min:x_max]
-            crop[wall_pixels > 0] = original_crop[wall_pixels > 0]
-            
-        img[y_min:y_max, x_min:x_max] = crop
-            
-    del structural_map, gray 
-    if output:
-        cv.imwrite(output, img)
-    return img
+def remove_txt(
+    img: Union["pyvips.Image", np.ndarray],
+    detections: list[dict[str, Any]],
+    output: Optional[str] = None,
+    min_wall_length: int = 80,
+) -> np.ndarray:
+    """Removes detected text from the image while preserving architectural walls and lines."""
+    floor_ocr = FloorMapOCR()
+    return floor_ocr.remove_txt(img, detections, output=output)
 
 
 def resize_img_det(img, detections, max_side=RESIZE_LIMIT):
